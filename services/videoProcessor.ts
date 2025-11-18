@@ -216,7 +216,8 @@ export const processVideo = async (videoFile: File): Promise<VideoAnalysis> => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    const frameInterval = Math.max(duration / 40, 0.75);
+    // Sample more densely so longer videos can produce multiple episodes
+    const frameInterval = Math.max(duration / 120, 0.5);
     const sampleTimes: number[] = [];
     for (let t = 0; t < duration; t += frameInterval) {
         sampleTimes.push(clampTime(t, duration));
@@ -274,7 +275,9 @@ export const processVideo = async (videoFile: File): Promise<VideoAnalysis> => {
         URL.revokeObjectURL(video.src);
     }
 
-    const MIN_MOTION_SCORE = 0.015;
+    const MIN_MOTION_SCORE = 0.01;
+    const MIN_SEGMENT_DURATION = 4; // seconds
+    const MAX_SEGMENT_DURATION = 45; // seconds
 
     const episodes: Episode[] = [];
     let activeSegment: {
@@ -285,6 +288,10 @@ export const processVideo = async (videoFile: File): Promise<VideoAnalysis> => {
 
     const finaliseSegment = (segment: typeof activeSegment) => {
         if (!segment || !segment.frames.length) {
+            return;
+        }
+        // Ignore very short bursts of motion
+        if (segment.end - segment.start < MIN_SEGMENT_DURATION) {
             return;
         }
         const bestFrame = segment.frames.reduce((best, current) =>
@@ -315,6 +322,17 @@ export const processVideo = async (videoFile: File): Promise<VideoAnalysis> => {
             } else {
                 activeSegment.end = frameInfo.time + frameInterval;
                 activeSegment.frames.push(frameInfo);
+
+                // If a segment runs for a long time, split it so we can
+                // capture distinct phases of the job (e.g. framing vs finishing)
+                if (activeSegment.end - activeSegment.start >= MAX_SEGMENT_DURATION) {
+                    finaliseSegment(activeSegment);
+                    activeSegment = {
+                        start: frameInfo.time,
+                        end: frameInfo.time + frameInterval,
+                        frames: [frameInfo],
+                    };
+                }
             }
         } else if (activeSegment) {
             finaliseSegment(activeSegment);
@@ -342,10 +360,12 @@ export const processVideo = async (videoFile: File): Promise<VideoAnalysis> => {
 
     const beforeFrame = frameAnalytics[0]?.thumbnail ?? '';
     const afterFrame = frameAnalytics[frameAnalytics.length - 1]?.thumbnail ?? beforeFrame;
+    const candidateFrames = frameAnalytics.map((frame) => frame.thumbnail);
 
     return {
         episodes: episodes.slice(0, 10),
         beforeFrame,
         afterFrame,
+        candidateFrames,
     };
 };

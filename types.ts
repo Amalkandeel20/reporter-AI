@@ -57,6 +57,8 @@ export interface GeminiEpisodeInsight {
   actions: string[];
   focusRegions: BoundingBox[];
   redactionRegions: BoundingBox[];
+  isBeforeCandidate?: boolean;
+  isAfterCandidate?: boolean;
 }
 
 export interface GeminiReportOverview {
@@ -70,4 +72,6 @@ export interface VideoAnalysis {
   episodes: Episode[];
   beforeFrame: string;
   afterFrame: string;
+  // Ordered candidate frames from across the video (data URLs)
+  candidateFrames?: string[];
 }

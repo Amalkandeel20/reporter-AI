@@ -41,12 +41,36 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData }) => {
                 <h3 className="font-bold text-slate-700">Before & After</h3>
                 <div className="grid grid-cols-2 gap-4 mt-2">
                     <div>
-                        <img src={reportData.beforeImage} alt="Before" className="rounded-lg shadow-md w-full h-auto object-cover" />
-                         <span className="text-xs font-semibold text-red-500 bg-red-100 px-2 py-0.5 rounded-full inline-block mt-2">Before</span>
+                        {reportData.beforeImage ? (
+                            <img
+                                src={reportData.beforeImage}
+                                alt="Before"
+                                className="rounded-lg shadow-md w-full h-auto object-cover"
+                            />
+                        ) : (
+                            <div className="rounded-lg shadow-inner w-full h-32 flex items-center justify-center bg-slate-100 text-xs text-slate-500 px-2 text-center">
+                                No suitable before photo was identified for this job.
+                            </div>
+                        )}
+                        <span className="text-xs font-semibold text-red-500 bg-red-100 px-2 py-0.5 rounded-full inline-block mt-2">
+                            Before
+                        </span>
                     </div>
                     <div>
-                        <img src={reportData.afterImage} alt="After" className="rounded-lg shadow-md w-full h-auto object-cover" />
-                        <span className="text-xs font-semibold text-green-500 bg-green-100 px-2 py-0.5 rounded-full inline-block mt-2">After</span>
+                        {reportData.afterImage ? (
+                            <img
+                                src={reportData.afterImage}
+                                alt="After"
+                                className="rounded-lg shadow-md w-full h-auto object-cover"
+                            />
+                        ) : (
+                            <div className="rounded-lg shadow-inner w-full h-32 flex items-center justify-center bg-slate-100 text-xs text-slate-500 px-2 text-center">
+                                No suitable after photo was identified for this job.
+                            </div>
+                        )}
+                        <span className="text-xs font-semibold text-green-500 bg-green-100 px-2 py-0.5 rounded-full inline-block mt-2">
+                            After
+                        </span>
                     </div>
                 </div>
             </div>

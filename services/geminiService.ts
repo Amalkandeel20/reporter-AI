@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { Episode, EpisodeInsightRequest, GeminiEpisodeInsight, GeminiReportOverview, BoundingBox } from '../types';
 
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_MODEL = 'gemini-2.5-flash';
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
@@ -9,7 +9,7 @@ if (!apiKey) {
     throw new Error('Gemini API key is not set. Add VITE_GEMINI_API_KEY to your environment.');
 }
 
-const geminiClient = new GoogleGenAI({ apiKey });
+const geminiClient = new GoogleGenAI({ apiKey }) as any;
 
 const callGemini = async (payload: Record<string, unknown>) => {
     if (geminiClient.responses && typeof geminiClient.responses.generate === 'function') {
@@ -54,8 +54,12 @@ const normaliseJson = <T>(raw: string, fallback: T): T => {
         .replace(/```$/, '')
         .trim();
 
+    // Try to isolate the first JSON object if the model added extra text
+    const jsonMatch = withoutFence.match(/\{[\s\S]*\}/);
+    const jsonCandidate = jsonMatch ? jsonMatch[0] : withoutFence;
+
     try {
-        return JSON.parse(withoutFence) as T;
+        return JSON.parse(jsonCandidate) as T;
     } catch (error) {
         console.warn('Failed to parse Gemini JSON response', error, withoutFence);
         return fallback;
@@ -101,6 +105,8 @@ const coerceEpisodeInsight = (raw: any): GeminiEpisodeInsight => {
         actions: [],
         focusRegions: [],
         redactionRegions: [],
+        isBeforeCandidate: false,
+        isAfterCandidate: false,
     };
 
     if (!raw || typeof raw !== 'object') {
@@ -138,12 +144,28 @@ const coerceEpisodeInsight = (raw: any): GeminiEpisodeInsight => {
             []
     );
 
+    const isBeforeCandidate =
+        typeof raw.isBeforeCandidate === 'boolean'
+            ? raw.isBeforeCandidate
+            : typeof raw.before === 'boolean'
+                ? raw.before
+                : false;
+
+    const isAfterCandidate =
+        typeof raw.isAfterCandidate === 'boolean'
+            ? raw.isAfterCandidate
+            : typeof raw.after === 'boolean'
+                ? raw.after
+                : false;
+
     return {
         summary,
         tools,
         actions,
         focusRegions,
         redactionRegions,
+        isBeforeCandidate,
+        isAfterCandidate,
     };
 };
 
@@ -166,26 +188,50 @@ export const analyzeEpisodeWithGemini = async (
     const { mimeType, data } = dataUrlToBase64(contextFrame);
 
     const prompt = `
-You are an assistant that documents construction and repair work for compliance reports.
-Review the provided still frame from a user-captured video segment. The frame covers work that starts at ${episode.startTime}s and ends at ${episode.endTime}s in the clip.
+You are an assistant that documents real-world construction, maintenance, and repair work in private homes.
+Field workers wear a body-mounted camera while working in a customer's house. The goal is to build an accurate, privacy-safe "digital twin" of the work that was actually performed.
 
-Return a strict JSON object with the following shape:
+You are given a single still frame from the video. This frame represents work taking place between ${episode.startTime}s and ${episode.endTime}s in the clip.
+
+Your job is to describe only the work that is clearly visible and to identify where to focus and where to blur for privacy. You must never guess or add tasks that are not obviously supported by the image.
+
+Return a strict JSON object with exactly this shape:
 {
-  "summary": string, // one sentence describing what is happening
-  "tools": string[], // short names of handheld or power tools clearly visible, empty array if none
-  "actions": string[], // verbs or short phrases describing the work activity (e.g. "tightening bolts"), empty array if unsure
-  "focus_regions": [ // regions to keep visible (tools and work area only; exclude people)
-    { "x": number, "y": number, "width": number, "height": number } // all values normalized 0-1 relative to image width/height
+  "summary": string,        // 1 short, customer-friendly sentence describing the visible work (what is being done and to what, e.g. "Repairing a leaking copper pipe behind the kitchen wall.")
+  "tools": string[],        // short names of handheld or power tools clearly visible and being used or ready for use (e.g. "cordless drill", "pipe wrench"); empty array if none are clearly visible
+  "actions": string[],      // short verb phrases that describe the actual work activity visible in the frame (e.g. "tightening bolts", "cutting drywall"); use empty array if you are not sure
+  "isBeforeCandidate": boolean, // true if this frame would make a good \"before\" photo that shows the problem or work area before it is fully resolved; otherwise false
+  "isAfterCandidate": boolean,  // true if this frame would make a good \"after\" photo that shows the finished or improved result of the work; otherwise false
+  "focus_regions": [        // regions to keep clearly visible in the customer report (only tools, worker hands, and immediate work area; no faces or full bodies)
+    { "x": number, "y": number, "width": number, "height": number } // all values normalized to 0–1 relative to image width and height
   ],
-  "redaction_regions": [ // regions containing faces or people that must remain blurred
+  "redaction_regions": [    // regions that contain faces, people, personal belongings, or anything that could identify the occupants and must be blurred
     { "x": number, "y": number, "width": number, "height": number }
   ]
 }
 
-Do not include any additional keys or commentary.
-If you cannot see the tools clearly, respond with empty arrays for tools and actions but still include a concise summary.
-Always provide empty arrays for focus_regions or redaction_regions if none are visible.
-Focus regions should capture just the work surface, tools, or worker hands. Faces or bodies must be listed under redaction_regions instead.
+Rules:
+- Always return valid JSON that matches the schema above, with no extra keys and no trailing comments or text.
+- The tone of "summary" must be clear and professional but easy for a homeowner to understand.
+- Do not hide problems or risky conditions: if you can clearly see damage, hazards, or temporary fixes, include that in the summary or actions.
+- Do not speculate about future work or hidden parts of the system; describe only what is visible in this frame.
+- "tools" should list only tools that are clearly identifiable; if you cannot confidently name a tool, do not include it.
+- "actions" should only describe work that is clearly happening in this frame (for example, "turning a valve" rather than "fixing plumbing" if that is all you can see).
+- "focus_regions" must only highlight the work itself: tools, worker hands, and the immediate work surface or components being worked on (pipes, wiring, fixtures, etc.).
+- "redaction_regions" must include faces, heads, full bodies, and any sensitive personal items (for example, family photos, documents, computer screens, or visible house numbers).
+- Set "isBeforeCandidate" to true only if:
+    - The frame clearly shows the problem area, equipment, or setup before the work is fully completed (for example, damaged, dirty, blocked, leaking, or disassembled components), AND
+    - The work area or components occupy most of the visible frame, AND
+    - No person's face or upper body dominates the frame. If a person is the main subject, set "isBeforeCandidate" to false.
+- Set "isAfterCandidate" to true only if:
+    - The frame clearly shows the result after work has been completed or significantly improved (for example, clean or restored components, sealed connections, reassembled equipment, or a visibly cleared blockage), AND
+    - The finished work area occupies most of the frame and is easy for a homeowner to visually understand as "after", AND
+    - No person's face or upper body dominates the frame. If the frame looks like a selfie or the person is the main subject, set "isAfterCandidate" to false.
+- If the frame mostly shows a worker's face, body, or other non-work content (for example, talking to camera, walking, or unrelated scenery), set both "isBeforeCandidate" and "isAfterCandidate" to false.
+- If no tools are visible, return "tools": [].
+- If no clear actions are visible, return "actions": [].
+- If no work-focused regions are needed, return "focus_regions": [].
+- If there is nothing that needs to be blurred, return "redaction_regions": [].
 `.trim();
 
     try {
@@ -214,6 +260,108 @@ Focus regions should capture just the work surface, tools, or worker hands. Face
             focusRegions: [],
             redactionRegions: [],
         };
+    }
+};
+
+export interface BeforeAfterSelection {
+    beforeIndex: number | null;
+    afterIndex: number | null;
+}
+
+export const selectBeforeAfterFromFrames = async (
+    frames: string[]
+): Promise<BeforeAfterSelection> => {
+    if (!frames.length) {
+        return { beforeIndex: null, afterIndex: null };
+    }
+
+    const parts: any[] = [];
+
+    frames.forEach((frame, index) => {
+        const { mimeType, data } = dataUrlToBase64(frame);
+        parts.push({ text: `Frame ${index}` });
+        parts.push({ inlineData: { mimeType, data } });
+    });
+
+    const prompt = `
+You are selecting the best BEFORE and AFTER photos from a short work video.
+The frames are provided in chronological order from the worker's body camera in a customer's home.
+
+Goal:
+- BEFORE: a frame that clearly shows the problem area or work area before the job is completed (for example, blockage, damage, exposed components, or a clearly incomplete state).
+- AFTER: a frame that clearly shows the result once the work has been completed or significantly improved (for example, cleared blockage, restored components, sealed connections, or a visibly finished setup).
+
+Privacy and relevance rules:
+- Avoid frames where a person's face or upper body is the main focus (selfie-style or talking-to-camera shots). These should not be chosen as BEFORE or AFTER.
+- Prefer frames where the work area and components take up most of the image and it is visually obvious what changed between BEFORE and AFTER.
+- If you cannot find a suitable BEFORE or AFTER frame that clearly matches the definitions above, use null for that value.
+
+Timeline rules (frames are in time order from 0 to ${frames.length - 1}):
+- BEFORE should be chosen from the earlier part of the video: prefer frames from the first half, ideally the first third, where the problem or pre-work condition is visible.
+- AFTER should be chosen from the later part of the video: prefer frames from the second half, ideally the last third, where the work looks finished or clearly improved.
+- Enforce BEFORE to come strictly before AFTER in time: beforeIndex must be less than afterIndex. If that is not possible, set beforeIndex or afterIndex to null instead of forcing a bad choice.
+
+Return a strict JSON object:
+{
+  "beforeIndex": number | null, // index of the chosen BEFORE frame from 0 to ${frames.length - 1}, or null if none is suitable
+  "afterIndex": number | null   // index of the chosen AFTER frame from 0 to ${frames.length - 1}, or null if none is suitable
+}
+
+Only return the JSON object with these two keys.
+`.trim();
+
+    try {
+        const response = await callGemini({
+            model: GEMINI_MODEL,
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        { text: prompt },
+                        ...parts,
+                    ],
+                },
+            ],
+        });
+
+        const text = extractText(response);
+        const parsed = normaliseJson<BeforeAfterSelection>(text, {
+            beforeIndex: null,
+            afterIndex: null,
+        });
+
+        const clampIndex = (value: unknown): number | null => {
+            if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+            const idx = Math.round(value);
+            if (idx < 0 || idx >= frames.length) return null;
+            return idx;
+        };
+
+        let beforeIndex = clampIndex(parsed.beforeIndex);
+        let afterIndex = clampIndex(parsed.afterIndex);
+
+        // Enforce coarse timeline constraints: BEFORE from earlier part, AFTER from later part
+        const half = Math.floor(frames.length / 2);
+        const minAfter = half;
+
+        if (beforeIndex !== null && beforeIndex >= half) {
+            beforeIndex = null;
+        }
+
+        if (afterIndex !== null && afterIndex < minAfter) {
+            afterIndex = null;
+        }
+
+        // Ensure BEFORE is strictly before AFTER
+        if (beforeIndex !== null && afterIndex !== null && beforeIndex >= afterIndex) {
+            // If they collide or are reversed, drop BEFORE (safer than choosing a late "before")
+            beforeIndex = null;
+        }
+
+        return { beforeIndex, afterIndex };
+    } catch (error) {
+        console.error('Gemini before/after frame selection failed', error);
+        return { beforeIndex: null, afterIndex: null };
     }
 };
 

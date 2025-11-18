@@ -168,10 +168,10 @@ export const applyPrivacyMask = async (
         const resolvedFocus = focusRegions.length
             ? focusRegions
             : fallbackSplit.focus;
-        const resolvedRedactions = [
-            ...redactionRegions,
-            ...fallbackSplit.redactions,
-        ];
+        // Be conservative: only blur regions explicitly marked for redaction.
+        // We no longer add automatic fallback redactions so that most of the
+        // frame remains clear unless Gemini has identified something sensitive.
+        const resolvedRedactions = redactionRegions;
 
         const privacyCanvas = document.createElement('canvas');
         const privacyCtx = privacyCanvas.getContext('2d');
@@ -181,8 +181,10 @@ export const applyPrivacyMask = async (
         privacyCanvas.width = width;
         privacyCanvas.height = height;
 
+        // Start from the original image so the work area stays clear by default
+        privacyCtx.drawImage(baseCanvas, 0, 0);
+
         const blurCanvas = upscaleBlurred(image, width, height);
-        privacyCtx.drawImage(blurCanvas, 0, 0);
 
         const focusBoxes = mergeBoxes(resolvedFocus)
             .map((box) => toPixelBox(box, width, height))
@@ -192,6 +194,7 @@ export const applyPrivacyMask = async (
             .map((box) => toPixelBox(box, width, height))
             .map((box) => expandBox(box, width, height, 0.05));
 
+        // Re-draw sharp focus regions with a clear border (purely visual; no blur outside)
         for (const box of focusBoxes) {
             privacyCtx.save();
             privacyCtx.beginPath();
@@ -201,17 +204,18 @@ export const applyPrivacyMask = async (
             privacyCtx.restore();
 
             privacyCtx.lineWidth = Math.max(Math.round(width / 280), 2);
-            privacyCtx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+            privacyCtx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
             privacyCtx.strokeRect(box.x, box.y, box.width, box.height);
         }
 
+        // Strongly blur and darken explicit redaction regions (faces, etc.)
         for (const box of redactionBoxes) {
             privacyCtx.save();
             privacyCtx.beginPath();
             privacyCtx.rect(box.x, box.y, box.width, box.height);
             privacyCtx.clip();
             privacyCtx.drawImage(blurCanvas, 0, 0);
-            privacyCtx.fillStyle = 'rgba(15, 23, 42, 0.5)';
+            privacyCtx.fillStyle = 'rgba(15, 23, 42, 0.6)';
             privacyCtx.fillRect(box.x, box.y, box.width, box.height);
             privacyCtx.restore();
         }

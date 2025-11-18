@@ -1,5 +1,5 @@
 import { processVideo } from './videoProcessor';
-import { analyzeEpisodeWithGemini, generateReportOverview } from './geminiService';
+import { analyzeEpisodeWithGemini, generateReportOverview, selectBeforeAfterFromFrames } from './geminiService';
 import { applyPrivacyMask } from './privacyMask';
 import { GeminiEpisodeInsight, ReportData } from '../types';
 
@@ -59,24 +59,20 @@ export const generateReport = async (
     const today = new Date();
     const formattedDate = formatDate(today);
 
-    const beforeImage =
-        privacySafeFrames[0] ||
-        (analysis.episodes[0]?.thumbnail
-            ? await applyPrivacyMask(analysis.episodes[0].thumbnail, {
-                  focusRegions: [],
-                  redactionRegions: [],
-                  fallbackRegion: analysis.episodes[0]?.activityBounds ?? null,
-              })
-            : '');
-    const afterImage =
-        privacySafeFrames[privacySafeFrames.length - 1] ||
-        (analysis.episodes[analysis.episodes.length - 1]?.thumbnail
-            ? await applyPrivacyMask(analysis.episodes[analysis.episodes.length - 1].thumbnail, {
-                  focusRegions: [],
-                  redactionRegions: [],
-                  fallbackRegion: analysis.episodes[analysis.episodes.length - 1]?.activityBounds ?? null,
-              })
-            : beforeImage);
+    // Ask Gemini to pick the best before/after frames from the whole video
+    const candidateFrames = analysis.candidateFrames ?? [];
+    const beforeAfterSelection = await selectBeforeAfterFromFrames(candidateFrames);
+
+    let beforeImage = '';
+    let afterImage = '';
+
+    if (beforeAfterSelection.beforeIndex !== null && candidateFrames[beforeAfterSelection.beforeIndex]) {
+        beforeImage = candidateFrames[beforeAfterSelection.beforeIndex];
+    }
+
+    if (beforeAfterSelection.afterIndex !== null && candidateFrames[beforeAfterSelection.afterIndex]) {
+        afterImage = candidateFrames[beforeAfterSelection.afterIndex];
+    }
 
     const tasksCompleted = (reportOverview.tasks.length
         ? reportOverview.tasks
