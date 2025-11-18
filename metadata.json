@@ -1,0 +1,7 @@
+{
+  "name": "Worksite Reporter AI",
+  "description": "An AI-powered application to document and summarize worksite activities by analyzing video footage. It generates professional reports with episode summaries, thumbnails, and key job details.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
