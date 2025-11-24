@@ -1,11 +1,36 @@
 <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Worksite Reporter AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+            },
+            colors: {
+              'brand-dark': '#1E1E1E', // Dark background
+              'brand-darker': '#121212', // Darker background for modals/nav
+              'brand-teal': '#004D56', // Primary Teal
+              'brand-teal-light': '#006D7A', // Lighter Teal for hovers/accents
+              'brand-teal-dark': '#003840', // Darker Teal
+              'brand-gray': '#2D2D2D', // Gray for cards/overlays
+              'brand-text': '#E0E0E0', // Light text
+              'brand-text-muted': '#A0A0A0', // Muted text
+            }
+          }
+        }
+      }
+    </script>
   <script type="importmap">
 {
   "imports": {

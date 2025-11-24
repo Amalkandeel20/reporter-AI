@@ -1,18 +1,39 @@
 import React from 'react';
-import { Menu, X } from 'lucide-react';
+import { Menu, User, X } from 'lucide-react';
 
-export const Header: React.FC = () => {
+interface HeaderProps {
+    onMenuClick?: () => void;
+    title?: string;
+    showClose?: boolean; // For sub-screens that need a close button instead of profile
+    onCloseClick?: () => void;
+}
+
+export const Header: React.FC<HeaderProps> = ({ onMenuClick, title = "Edge Vision", showClose = false, onCloseClick }) => {
     return (
-        <header className="bg-[#4a5568] p-4 flex justify-between items-center text-white shrink-0">
-            <button className="p-2 rounded-full bg-slate-600/50 hover:bg-slate-500/50 transition-colors">
-                <Menu size={20} />
+        <header className="flex items-center justify-between px-4 py-4 bg-transparent z-10 relative">
+            <button 
+                onClick={onMenuClick}
+                className="w-10 h-10 bg-brand-teal-dark rounded-full flex items-center justify-center text-white shadow-lg hover:bg-brand-teal transition-colors"
+            >
+                <Menu size={24} />
             </button>
-            <div className="px-4 py-1.5 rounded-lg text-sm bg-slate-600/50">
-                Dim Screen
+
+            <div className="bg-brand-teal-dark px-6 py-2 rounded-full shadow-lg border border-brand-teal/20">
+                <h1 className="text-white font-semibold tracking-wide text-sm">{title}</h1>
             </div>
-            <button className="p-2 rounded-full bg-slate-600/50 hover:bg-slate-500/50 transition-colors">
-                <X size={20} />
-            </button>
+
+            {showClose ? (
+                <button 
+                    onClick={onCloseClick}
+                    className="w-10 h-10 bg-brand-teal-dark rounded-full flex items-center justify-center text-white shadow-lg hover:bg-brand-teal transition-colors"
+                >
+                    <X size={24} />
+                </button>
+            ) : (
+                <button className="w-10 h-10 bg-brand-teal-dark rounded-full flex items-center justify-center text-white shadow-lg hover:bg-brand-teal transition-colors">
+                    <User size={24} />
+                </button>
+            )}
         </header>
     );
 };
