@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, User, Settings, HelpCircle, HardDrive, Command } from 'lucide-react';
+import { X, User } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 interface BurgerMenuProps {
@@ -14,7 +14,8 @@ export const BurgerMenu: React.FC<BurgerMenuProps> = ({ isOpen, onClose }) => {
 
     const handleNavigation = (path: string) => {
         navigate(path);
-        onClose();
+        // Leave the overlay up briefly so the next screen renders before we hide the menu
+        setTimeout(() => onClose(), 120);
     };
 
     return (
@@ -35,25 +36,21 @@ export const BurgerMenu: React.FC<BurgerMenuProps> = ({ isOpen, onClose }) => {
 
                 {/* Menu Items */}
                 <div className="flex flex-col gap-4">
-                    <MenuButton 
-                        icon={<HardDrive size={20} />} 
-                        label="Connected Devices" 
-                        onClick={() => handleNavigation('/devices')} 
+                    <MenuButton
+                        label="Settings"
+                        onClick={() => handleNavigation('/settings')}
                     />
-                    <MenuButton 
-                        icon={<Settings size={20} />} 
-                        label="Settings" 
-                        onClick={() => handleNavigation('/settings')} 
+                    <MenuButton
+                        label="Connected Devices"
+                        onClick={() => handleNavigation('/devices')}
                     />
-                    <MenuButton 
-                        icon={<HelpCircle size={20} />} 
-                        label="Support" 
-                        onClick={() => handleNavigation('/support')} 
+                    <MenuButton
+                        label="My Data"
+                        onClick={() => handleNavigation('/my-data')}
                     />
-                    <MenuButton 
-                        icon={<Command size={20} />} 
-                        label="Configure Shortcuts" 
-                        onClick={() => handleNavigation('/shortcuts')} 
+                    <MenuButton
+                        label="Support"
+                        onClick={() => handleNavigation('/support')}
                     />
                 </div>
             </div>
@@ -62,17 +59,15 @@ export const BurgerMenu: React.FC<BurgerMenuProps> = ({ isOpen, onClose }) => {
 };
 
 interface MenuButtonProps {
-    icon: React.ReactNode;
     label: string;
     onClick: () => void;
 }
 
-const MenuButton: React.FC<MenuButtonProps> = ({ icon, label, onClick }) => (
+const MenuButton: React.FC<MenuButtonProps> = ({ label, onClick }) => (
     <button 
         onClick={onClick}
-        className="w-full bg-brand-teal-dark hover:bg-brand-teal text-white py-4 px-6 rounded-2xl flex items-center justify-center gap-3 transition-all duration-200 font-medium shadow-lg active:scale-95"
+        className="w-full bg-[#023743] hover:bg-[#06495a] text-white py-3 px-6 rounded-full text-base font-semibold shadow-lg transition-colors active:scale-95"
     >
-        {/* {icon} Icon is optional in design, text is centered */}
         {label}
     </button>
 );

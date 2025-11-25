@@ -8,6 +8,10 @@ import { HistoryScreen } from './components/HistoryScreen';
 import { PlaceholderScreen } from './components/PlaceholderScreen';
 import { BurgerMenu } from './components/BurgerMenu';
 import { Header } from './components/Header';
+import { SettingsMenu } from './components/SettingsMenu';
+import { MyDataMenu } from './components/MyDataMenu';
+import { SupportMenu } from './components/SupportMenu';
+import { AccessibilityMenu } from './components/AccessibilityMenu';
 import { Task, ReportData } from './types';
 import { initialTasks } from './constants';
 import { generateReport } from './services/reportGenerator';
@@ -95,7 +99,13 @@ const AppContent: React.FC = () => {
                 <Header 
                     onMenuClick={() => setIsMenuOpen(true)} 
                     showClose={!isHome}
-                    onCloseClick={() => navigate('/')}
+                    onCloseClick={() => {
+                        if (window.history.length > 1) {
+                            navigate(-1);
+                        } else {
+                            navigate('/');
+                        }
+                    }}
                 />
 
                 <main className="flex-grow overflow-hidden relative">
@@ -131,13 +141,10 @@ const AppContent: React.FC = () => {
                         
                         {/* Placeholder Routes */}
                         <Route path="/devices" element={<PlaceholderScreen title="Connected Devices" items={[{label: 'Connect New Device'}, {label: 'Device 1'}, {label: 'Device 2'}]} />} />
-                        <Route path="/settings" element={<PlaceholderScreen title="Settings" items={[
-                            {label: 'Accessibility & Language'}, 
-                            {label: 'Account Settings'}, 
-                            {label: 'Notifications'},
-                            {label: 'Connect Database (Mock)', onClick: () => alert('Database Connected Successfully (Mock)')}
-                        ]} />} />
-                        <Route path="/support" element={<PlaceholderScreen title="Support" items={[{label: 'Support Chatbot'}, {label: 'Contact Support'}]} />} />
+                        <Route path="/settings" element={<SettingsMenu />} />
+                        <Route path="/settings/accessibility" element={<AccessibilityMenu />} />
+                        <Route path="/my-data" element={<MyDataMenu />} />
+                        <Route path="/support" element={<SupportMenu />} />
                     </Routes>
                 </main>
 

@@ -11,6 +11,7 @@ interface HomeScreenProps {
 export const HomeScreen: React.FC<HomeScreenProps> = ({ currentProject, tasks }) => {
     const navigate = useNavigate();
     const [currentDate, setCurrentDate] = useState(new Date());
+    const [showPercentage, setShowPercentage] = useState(true);
 
     useEffect(() => {
         const timer = setInterval(() => setCurrentDate(new Date()), 60000);
@@ -24,6 +25,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ currentProject, tasks })
     const completedTasks = tasks.filter(task => task.completed).length;
     const totalTasks = tasks.length;
     const completionPercentage = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+    const progressLabel = totalTasks > 0
+        ? showPercentage
+            ? `${completionPercentage}% Complete`
+            : `${completedTasks}/${totalTasks} Tasks Complete`
+        : 'No tasks yet';
 
     return (
         <div className="flex flex-col h-full px-4 pb-6 gap-4">
@@ -43,18 +49,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ currentProject, tasks })
                 </div>
 
                 <div className="mt-auto">
-                    <div className="bg-[#4A4A4A] rounded-full h-12 relative overflow-hidden flex items-center px-4">
-                        <div 
-                            className="absolute left-0 top-0 bottom-0 bg-brand-teal-light rounded-full transition-all duration-500" 
+                    <button
+                        onClick={() => setShowPercentage((prev) => !prev)}
+                        className="w-full bg-[#4A4A4A] rounded-full h-12 relative overflow-hidden flex items-center px-4 text-left"
+                    >
+                        <div
+                            className="absolute left-0 top-0 bottom-0 bg-brand-teal-light rounded-full transition-all duration-500"
                             style={{ width: `${completionPercentage}%` }}
                         ></div>
                         <span className="relative z-10 text-white font-bold text-lg drop-shadow-md">
-                            {totalTasks > 0 ? `${completionPercentage}% Complete` : "No tasks yet"}
+                            {progressLabel}
                         </span>
-                        <button className="absolute right-2 z-10 p-1 text-white/80 hover:text-white">
+                        <span className="absolute right-2 z-10 p-1 text-white/80">
                             <RotateCw size={20} />
-                        </button>
-                    </div>
+                        </span>
+                    </button>
                 </div>
             </div>
 

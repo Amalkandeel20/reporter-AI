@@ -101,6 +101,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
     const [isSending, setIsSending] = useState(false);
     const [error, setError] = useState('');
     const [isFinishing, setIsFinishing] = useState(false);
+    const [timeLeft, setTimeLeft] = useState<number | null>(null); // seconds remaining for auto-clear
 
     // Check if session is cleared from the report data (persists across navigation)
     const sessionCleared = reportData?.sessionCleared ?? false;
@@ -111,6 +112,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
     const latestDraftRef = useRef<ReportData | null>(draftReport);
     const latestSessionClearedRef = useRef(sessionCleared);
     const latestVideoRef = useRef(reportData?.geminiVideo ?? null);
+    const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     useEffect(() => {
         setDraftReport(reportData);
@@ -128,10 +130,57 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
         setInput('');
         setError('');
         setView('preview');
+        setTimeLeft(null); // reset timer for a new report
         
         // Mark as mounted after first render
         isMountedRef.current = true;
     }, [reportData]);
+
+    // Start the 10-minute timer on first entry into Chat (do not reset when switching views)
+    useEffect(() => {
+        if (sessionCleared) {
+            setTimeLeft(null);
+            return;
+        }
+        if (view === 'chat' && timeLeft === null) {
+            setTimeLeft(10 * 60); // 10 minutes in seconds
+        }
+    }, [view, sessionCleared, timeLeft]);
+
+    // Drive the countdown tick
+    useEffect(() => {
+        if (timeLeft === null || sessionCleared) {
+            if (countdownRef.current) {
+                clearInterval(countdownRef.current);
+                countdownRef.current = null;
+            }
+            return;
+        }
+
+        if (!countdownRef.current) {
+            countdownRef.current = setInterval(() => {
+                setTimeLeft((prev) => {
+                    if (prev === null) return null;
+                    return Math.max(prev - 1, 0);
+                });
+            }, 1000);
+        }
+
+        return () => {
+            if (countdownRef.current) {
+                clearInterval(countdownRef.current);
+                countdownRef.current = null;
+            }
+        };
+    }, [timeLeft, sessionCleared]);
+
+    // Auto-finish when countdown hits zero
+    useEffect(() => {
+        if (timeLeft === 0 && !sessionCleared && !isFinishing) {
+            handleFinishAndClear(true);
+            setTimeLeft(null);
+        }
+    }, [timeLeft, sessionCleared, isFinishing]);
 
     // Keep refs in sync so the unmount cleanup uses the latest data
     useEffect(() => {
@@ -312,7 +361,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
         }
     };
 
-    const handleFinishAndClear = async () => {
+    const handleFinishAndClear = async (triggeredByTimer = false) => {
         if (sessionCleared || isFinishing) return;
         setIsFinishing(true);
         try {
@@ -332,7 +381,9 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
                 ...prev,
                 {
                     role: 'assistant',
-                    content: 'Session finished. Report saved and upload cleared.',
+                    content: triggeredByTimer
+                        ? 'Session auto-cleared after 10 minutes. Report saved and upload cleared.'
+                        : 'Session finished. Report saved and upload cleared.',
                 },
             ]);
         } catch (err) {
@@ -710,6 +761,14 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
                                 {isSending && (
                                     <p className="text-[11px] text-teal-200 mt-1 flex items-center gap-1">
                                         <Loader2 className="animate-spin" size={12} /> Sending…
+                                    </p>
+                                )}
+                                {timeLeft !== null && !sessionCleared && (
+                                    <p className="text-[11px] text-amber-200 mt-1">
+                                        Auto-clears in {Math.floor(timeLeft / 60)
+                                            .toString()
+                                            .padStart(2, '0')}:
+                                        {(timeLeft % 60).toString().padStart(2, '0')}
                                     </p>
                                 )}
                             </div>
