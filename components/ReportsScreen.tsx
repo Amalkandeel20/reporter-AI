@@ -344,7 +344,23 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
             setChatTurns((prev) => [...prev, assistantTurn]);
 
             if (result.updatedReport) {
-                const withFrames = await attachFramesToNewEpisodes(displayData, result.updatedReport);
+                // Preserve existing episodes and media; only append new episodes from Gemini
+                const baseEpisodes = displayData.episodes ?? [];
+                const incomingEpisodes = result.updatedReport.episodes ?? [];
+                const newEpisodes = incomingEpisodes.slice(baseEpisodes.length);
+
+                const normalizedReport: ReportData = {
+                    ...displayData, // keep existing top-level fields
+                    ...result.updatedReport,
+                    episodes: [...baseEpisodes, ...newEpisodes],
+                    beforeImage: displayData.beforeImage,
+                    afterImage: displayData.afterImage,
+                    candidateFrames: displayData.candidateFrames,
+                    candidateFrameTimes: displayData.candidateFrameTimes,
+                    geminiVideo: displayData.geminiVideo,
+                };
+
+                const withFrames = await attachFramesToNewEpisodes(displayData, normalizedReport);
                 const merged = mergeReportMedia(displayData, withFrames);
                 setDraftReport(merged);
             }
