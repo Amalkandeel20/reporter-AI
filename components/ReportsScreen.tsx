@@ -251,6 +251,8 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
 
         const candidateFrames = base.candidateFrames;
         const candidateFrameTimes = base.candidateFrameTimes ?? [];
+        const minTime = candidateFrameTimes.length ? Math.min(...candidateFrameTimes) : 0;
+        const maxTime = candidateFrameTimes.length ? Math.max(...candidateFrameTimes) : 0;
 
         const episodes = await Promise.all(
             updated.episodes.map(async (episode, idx) => {
@@ -270,14 +272,41 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
                     maxFrames: 1,
                 });
 
+                const clampTime = (t: number) => {
+                    if (!Number.isFinite(t)) return t;
+                    if (minTime === maxTime) return t;
+                    return Math.min(Math.max(t, minTime), maxTime);
+                };
+
+                const needsTimeCorrection = (start: number | null, end: number | null) => {
+                    if (start === null || end === null) return true;
+                    if (minTime === maxTime) return false;
+                    return end - start > (maxTime - minTime) * 0.8;
+                };
+
                 if (selection.status === 'selected' && selection.frameIndices.length) {
-                    const chosen = candidateFrames[selection.frameIndices[0]];
+                    const chosenIndex = selection.frameIndices[0];
+                    const chosen = candidateFrames[chosenIndex];
+                    const chosenTime = candidateFrameTimes[chosenIndex] ?? null;
+
+                    const shouldReplaceTime = needsTimeCorrection(startTime, endTime) && chosenTime !== null;
+                    const startTimeAdjusted =
+                        shouldReplaceTime && chosenTime !== null
+                            ? clampTime(chosenTime - 1)
+                            : startTime ?? (chosenTime !== null ? clampTime(chosenTime) : startTime);
+                    const endTimeAdjusted =
+                        shouldReplaceTime && chosenTime !== null
+                            ? clampTime(chosenTime + 1)
+                            : endTime ?? (chosenTime !== null ? clampTime(chosenTime) : endTime);
+
                     return {
                         ...episode,
                         episodeData: {
                             ...episode.episodeData,
                             thumbnail: chosen,
                             highlightedFrame: chosen,
+                            startTime: startTimeAdjusted ?? episode.episodeData?.startTime,
+                            endTime: endTimeAdjusted ?? episode.episodeData?.endTime,
                         },
                     };
                 }
@@ -302,12 +331,15 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
                 }
 
                 const fallbackFrame = candidateFrames[bestIndex];
+                const fallbackTime = candidateFrameTimes[bestIndex] ?? targetTime;
                 return {
                     ...episode,
                     episodeData: {
                         ...episode.episodeData,
                         thumbnail: fallbackFrame,
                         highlightedFrame: fallbackFrame,
+                        startTime: startTime ?? fallbackTime,
+                        endTime: endTime ?? fallbackTime,
                     },
                 };
             })
@@ -347,12 +379,79 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
                 // Preserve existing episodes and media; only append new episodes from Gemini
                 const baseEpisodes = displayData.episodes ?? [];
                 const incomingEpisodes = result.updatedReport.episodes ?? [];
-                const newEpisodes = incomingEpisodes.slice(baseEpisodes.length);
+                const candidateFrameTimes = displayData.candidateFrameTimes ?? [];
+                const minTime = candidateFrameTimes.length ? Math.min(...candidateFrameTimes) : 0;
+                const maxTime = candidateFrameTimes.length ? Math.max(...candidateFrameTimes) : 0;
+                const clampTime = (t: number | null | undefined) => {
+                    if (t === null || t === undefined || !Number.isFinite(t)) return t ?? undefined;
+                    if (minTime === maxTime) return t;
+                    return Math.min(Math.max(t, minTime), maxTime);
+                };
+
+                const isDuplicateEpisode = (ep: any, against: any[]) => {
+                    const s = typeof ep?.episodeData?.startTime === 'number' ? ep.episodeData.startTime : null;
+                    const e = typeof ep?.episodeData?.endTime === 'number' ? ep.episodeData.endTime : null;
+                    for (const existing of against) {
+                        const es = typeof existing?.episodeData?.startTime === 'number' ? existing.episodeData.startTime : null;
+                        const ee = typeof existing?.episodeData?.endTime === 'number' ? existing.episodeData.endTime : null;
+                        const startClose = s !== null && es !== null && Math.abs(s - es) < 0.25;
+                        const endClose = e !== null && ee !== null && Math.abs(e - ee) < 0.25;
+                        const summaryMatch =
+                            typeof ep?.summary === 'string' &&
+                            typeof existing?.summary === 'string' &&
+                            ep.summary.trim().toLowerCase() === existing.summary.trim().toLowerCase();
+                        if (startClose && endClose && summaryMatch) return true;
+                    }
+                    return false;
+                };
+
+                const normalizeNewEpisodes = (eps: any[]) =>
+                    eps.map((ep) => {
+                        const s = typeof ep?.episodeData?.startTime === 'number' ? ep.episodeData.startTime : null;
+                        const e = typeof ep?.episodeData?.endTime === 'number' ? ep.episodeData.endTime : null;
+                        let startTime = s;
+                        let endTime = e;
+                        const range = maxTime - minTime;
+                        const tooWide = startTime !== null && endTime !== null && range > 0 && (endTime - startTime > range * 0.8 || endTime - startTime > 30);
+                        if (tooWide || startTime === null || endTime === null) {
+                            const center = startTime !== null && endTime !== null ? (startTime + endTime) / 2 : minTime;
+                            const clampedCenter = clampTime(center) ?? center ?? 0;
+                            startTime = clampTime(clampedCenter - 1) ?? clampedCenter;
+                            endTime = clampTime(clampedCenter + 1) ?? clampedCenter + 1;
+                            if (endTime <= startTime) endTime = startTime + 1;
+                        } else {
+                            startTime = clampTime(startTime) ?? startTime;
+                            endTime = clampTime(endTime) ?? endTime;
+                        }
+                        return {
+                            ...ep,
+                            episodeData: {
+                                ...ep.episodeData,
+                                startTime,
+                                endTime,
+                            },
+                        };
+                    });
+
+                const existingIds = new Set(
+                    baseEpisodes
+                        .map((ep) => ep.episodeData?.id)
+                        .filter((id): id is number => typeof id === 'number')
+                );
+                const newEpisodes = incomingEpisodes.filter((ep, idx) => {
+                    // Treat any episodes beyond the existing length as new
+                    if (idx >= baseEpisodes.length) return true;
+                    const id = ep.episodeData?.id;
+                    return typeof id !== 'number' || !existingIds.has(id);
+                });
+                const dedupedNew = normalizeNewEpisodes(
+                    newEpisodes.filter((ep) => !isDuplicateEpisode(ep, baseEpisodes))
+                );
 
                 const normalizedReport: ReportData = {
                     ...displayData, // keep existing top-level fields
                     ...result.updatedReport,
-                    episodes: [...baseEpisodes, ...newEpisodes],
+                    episodes: [...baseEpisodes, ...dedupedNew],
                     beforeImage: displayData.beforeImage,
                     afterImage: displayData.afterImage,
                     candidateFrames: displayData.candidateFrames,
@@ -362,7 +461,12 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
 
                 const withFrames = await attachFramesToNewEpisodes(displayData, normalizedReport);
                 const merged = mergeReportMedia(displayData, withFrames);
-                setDraftReport(merged);
+                const sortedEpisodes = [...merged.episodes].sort((a, b) => {
+                    const aStart = a.episodeData?.startTime ?? 0;
+                    const bStart = b.episodeData?.startTime ?? 0;
+                    return aStart - bStart;
+                });
+                setDraftReport({ ...merged, episodes: sortedEpisodes });
             }
 
             if (result.error) {

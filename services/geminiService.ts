@@ -710,12 +710,16 @@ export const editReportWithGemini = async (args: {
     const isAddingContent = /\b(add|include|insert|create)\b/i.test(message);
     const shouldUseVideo = isAddingContent && video;
 
-    const rules = `
+const rules = `
 You are editing a worksite report based on the user's request.
 - The report was generated from a bodycam video that has already been fully analyzed.
 - You have the complete report data with all episodes, summaries, and metadata.${shouldUseVideo ? '\n- You have access to the full source video to verify and find new content.' : ''}
 - For edits: Only modify fields the user explicitly requests to change.
 - For additions: ${shouldUseVideo ? 'Review the video to find the described content, extract the timestamp, and add it as a new episode with proper details.' : 'Only add new episodes if the user provides specific timestamps (e.g., "at 2:30" or "between 1:00-1:15").'}
+- CRITICAL: If the user asks to add content, do NOT refuse by saying it is already covered. Add a new episode for the requested action, even if similar content exists. Do not alter existing episodes unless the user explicitly asks you to change them.
+- CRITICAL: If the user asks to add content, do NOT refuse by saying it is already covered. Add a new episode for the requested action, even if similar content exists. Do not alter existing episodes unless the user explicitly asks you to change them.
+- Do NOT merge multiple distinct actions/tools into a single episode or thumbnail. If an action involves a different tool or a clearly separate step (e.g., screwdriver vs. jet hose), create separate episodes with their own timestamps and frames that visually show that action/tool.
+- Each new episode must have precise, narrow timestamps (start/end) that match the specific action shown in its thumbnail/frame. Keep spans tight (a few seconds) and centered on the frame you pick. Do not reuse an unrelated frame; pick a frame where the action/tool is clearly visible.
 - When adding new episodes, you MUST include episodeData with: startTime, endTime, detectedTools, keyActions. The thumbnail will be added automatically later.
 - Do NOT invent or guess content. Only add what you can clearly see in the video or what the user explicitly describes with a timestamp.
 - Preserve all existing fields unless explicitly instructed to change them.
