@@ -38,6 +38,11 @@ export interface ReportData {
   }>;
   beforeImage: string;
   afterImage: string;
+  demoMode?: boolean;
+  geminiVideo?: GeminiVideoReference | null;
+  candidateFrames?: string[];
+  candidateFrameTimes?: number[];
+  sessionCleared?: boolean; // True once "Finish & Clear" is clicked - locks editing
 }
 
 export enum Tab {
@@ -49,6 +54,8 @@ export enum Tab {
 export interface EpisodeInsightRequest {
   episode: Episode;
   contextFrame: string;
+  demoMode?: boolean;
+  uploadedVideo?: GeminiVideoReference | null;
 }
 
 export interface GeminiEpisodeInsight {
@@ -68,10 +75,31 @@ export interface GeminiReportOverview {
   tasks: string[];
 }
 
+export interface GeminiVideoReference {
+  fileUri: string;
+  mimeType: string;
+  name?: string;
+  cacheName?: string;
+}
+
 export interface VideoAnalysis {
   episodes: Episode[];
   beforeFrame: string;
   afterFrame: string;
   // Ordered candidate frames from across the video (data URLs)
   candidateFrames?: string[];
+  candidateFrameTimes?: number[];
+}
+
+export type ChatRole = 'user' | 'assistant';
+
+export interface ReportEditTurn {
+  role: ChatRole;
+  content: string;
+}
+
+export interface ReportEditResponse {
+  reply: string;
+  updatedReport: ReportData | null;
+  error?: string;
 }

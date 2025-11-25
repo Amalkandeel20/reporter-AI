@@ -361,11 +361,13 @@ export const processVideo = async (videoFile: File): Promise<VideoAnalysis> => {
     const beforeFrame = frameAnalytics[0]?.thumbnail ?? '';
     const afterFrame = frameAnalytics[frameAnalytics.length - 1]?.thumbnail ?? beforeFrame;
     const candidateFrames = frameAnalytics.map((frame) => frame.thumbnail);
+    const candidateFrameTimes = frameAnalytics.map((frame) => frame.time);
 
     return {
         episodes: episodes.slice(0, 10),
         beforeFrame,
         afterFrame,
         candidateFrames,
+        candidateFrameTimes,
     };
 };

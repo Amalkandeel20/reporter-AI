@@ -1,7 +1,7 @@
 import { processVideo } from './videoProcessor';
-import { analyzeEpisodeWithGemini, generateReportOverview, selectBeforeAfterFromFrames } from './geminiService';
+import { analyzeEpisodeWithGemini, generateReportOverview, selectBeforeAfterFromFrames, uploadVideoForGemini } from './geminiService';
 import { applyPrivacyMask } from './privacyMask';
-import { GeminiEpisodeInsight, ReportData } from '../types';
+import { GeminiEpisodeInsight, GeminiVideoReference, ReportData } from '../types';
 
 const formatDate = (date: Date) =>
     date.toLocaleDateString('en-US', {
@@ -12,13 +12,26 @@ const formatDate = (date: Date) =>
 
 export const generateReport = async (
     videoFile: File,
-    onStatusUpdate: (status: string) => void
+    onStatusUpdate: (status: string) => void,
+    options?: { demoMode?: boolean }
 ): Promise<ReportData> => {
+    const demoMode = options?.demoMode ?? false;
+
     onStatusUpdate('Detecting activity in the video...');
     const analysis = await processVideo(videoFile);
 
     if (!analysis.episodes.length) {
         throw new Error('No meaningful activity detected in the video.');
+    }
+
+    let uploadedVideo: GeminiVideoReference | null = null;
+
+    if (demoMode) {
+        onStatusUpdate('Uploading video to Gemini for native analysis (demo mode)...');
+        uploadedVideo = await uploadVideoForGemini(videoFile);
+        if (!uploadedVideo) {
+            onStatusUpdate('Upload failed, continuing with frame-based analysis.');
+        }
     }
 
     onStatusUpdate(`Found ${analysis.episodes.length} activity segment${analysis.episodes.length > 1 ? 's' : ''}. Capturing documentation...`);
@@ -31,6 +44,8 @@ export const generateReport = async (
         const insight = await analyzeEpisodeWithGemini({
             episode,
             contextFrame: episode.thumbnail,
+            demoMode,
+            uploadedVideo,
         });
 
         const privacyFrame = await applyPrivacyMask(episode.thumbnail, {
@@ -91,5 +106,9 @@ export const generateReport = async (
         tasksCompleted,
         beforeImage,
         afterImage,
+        demoMode,
+        geminiVideo: uploadedVideo ?? null,
+        candidateFrames: analysis.candidateFrames ?? [],
+        candidateFrameTimes: analysis.candidateFrameTimes ?? [],
     };
 };

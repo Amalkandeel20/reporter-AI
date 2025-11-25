@@ -5,9 +5,17 @@ interface CameraScreenProps {
     onGenerateReport: (videoFile: File) => void;
     isProcessing: boolean;
     processingStatus: string;
+    demoMode: boolean;
+    onToggleDemoMode: () => void;
 }
 
-export const CameraScreen: React.FC<CameraScreenProps> = ({ onGenerateReport, isProcessing, processingStatus }) => {
+export const CameraScreen: React.FC<CameraScreenProps> = ({
+    onGenerateReport,
+    isProcessing,
+    processingStatus,
+    demoMode,
+    onToggleDemoMode,
+}) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const handleCameraClick = () => {
@@ -31,6 +39,30 @@ export const CameraScreen: React.FC<CameraScreenProps> = ({ onGenerateReport, is
                 </div>
             ) : (
                 <>
+                    <div className="w-full max-w-sm mb-6 bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+                        <div className="flex items-center justify-between">
+                            <div className="flex-1 pr-4">
+                                <p className="text-white font-semibold">Demo Mode</p>
+                                <p className="text-xs text-slate-400">
+                                    Uploads the full video to Gemini for native analysis (experimental).
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={onToggleDemoMode}
+                                disabled={isProcessing}
+                                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                                    demoMode ? 'bg-orange-500' : 'bg-slate-600'
+                                } ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            >
+                                <span
+                                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                                        demoMode ? 'translate-x-5' : 'translate-x-1'
+                                    }`}
+                                />
+                            </button>
+                        </div>
+                    </div>
                     <input
                         type="file"
                         ref={fileInputRef}

@@ -20,6 +20,7 @@ const AppContent: React.FC = () => {
     const [processingStatus, setProcessingStatus] = useState('');
     const [reportData, setReportData] = useState<ReportData | null>(null);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
+    const [demoModeEnabled, setDemoModeEnabled] = useState(false);
     
     const navigate = useNavigate();
     const location = useLocation();
@@ -47,10 +48,14 @@ const AppContent: React.FC = () => {
         ]);
     }, []);
 
-    const handleGenerateReport = useCallback(async (videoFile: File) => {
+    const handleGenerateReport = useCallback(async (videoFile: File, useDemoMode: boolean) => {
         setIsProcessing(true);
         try {
-            const newReport = await generateReport(videoFile, (status) => setProcessingStatus(status));
+            const newReport = await generateReport(
+                videoFile,
+                (status) => setProcessingStatus(status),
+                { demoMode: useDemoMode }
+            );
             setReportData(newReport);
             
             // Auto-sync tasks from report if enabled
@@ -109,8 +114,19 @@ const AppContent: React.FC = () => {
                                 />
                             }
                         />
-                        <Route path="/camera" element={<CameraScreen onGenerateReport={handleGenerateReport} isProcessing={isProcessing} processingStatus={processingStatus} />} />
-                        <Route path="/reports" element={<ReportsScreen reportData={reportData} />} />
+                        <Route
+                            path="/camera"
+                            element={
+                                <CameraScreen
+                                    onGenerateReport={(file) => handleGenerateReport(file, demoModeEnabled)}
+                                    isProcessing={isProcessing}
+                                    processingStatus={processingStatus}
+                                    demoMode={demoModeEnabled}
+                                    onToggleDemoMode={() => setDemoModeEnabled((prev) => !prev)}
+                                />
+                            }
+                        />
+                        <Route path="/reports" element={<ReportsScreen reportData={reportData} onUpdateReport={setReportData} />} />
                         <Route path="/history" element={<HistoryScreen />} />
                         
                         {/* Placeholder Routes */}

@@ -1,14 +1,184 @@
-import React from 'react';
-import { ReportData } from '../types';
-import { FileText, Download, Play, Edit } from 'lucide-react';
+import React, { useEffect, useState, useRef } from 'react';
+import { ReportData, ReportEditTurn } from '../types';
+import { FileText, MessageCircle, Send, ShieldCheck, Loader2, Trash2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
-import { saveAs } from 'file-saver';
+import { editReportWithGemini, deleteGeminiFile, pickFramesForEpisode } from '../services/geminiService';
+
+const mergeReportMedia = (base: ReportData, updated: ReportData): ReportData => {
+    const safeImage = (candidate?: string) =>
+        candidate && candidate !== '[omitted]' ? candidate : undefined;
+
+    const pickFrameForEpisode = (episode: any): string => {
+        const frames = base.candidateFrames ?? [];
+        if (!frames.length) {
+            return (
+                safeImage(base.beforeImage) ??
+                safeImage(base.afterImage) ??
+                safeImage(base.episodes[0]?.episodeData?.thumbnail) ??
+                ''
+            );
+        }
+        const times = base.candidateFrameTimes ?? [];
+        const targetTime =
+            typeof episode?.episodeData?.startTime === 'number' &&
+            typeof episode?.episodeData?.endTime === 'number'
+                ? (episode.episodeData.startTime + episode.episodeData.endTime) / 2
+                : times.length
+                    ? times[Math.floor(times.length / 2)]
+                    : 0;
+
+        if (!times.length) {
+            return frames[Math.min(Math.max(Math.floor(frames.length / 2), 0), frames.length - 1)];
+        }
+
+        let bestIndex = 0;
+        let bestDelta = Math.abs(times[0] - targetTime);
+        for (let i = 1; i < times.length; i++) {
+            const delta = Math.abs(times[i] - targetTime);
+            if (delta < bestDelta) {
+                bestDelta = delta;
+                bestIndex = i;
+            }
+        }
+        return frames[bestIndex] ?? frames[0];
+    };
+
+    const defaultThumb = pickFrameForEpisode(updated.episodes[0] ?? base.episodes[0]);
+    const defaultHighlight =
+        safeImage(base.episodes[0]?.episodeData?.highlightedFrame) ??
+        defaultThumb ??
+        '';
+
+    const mergedEpisodes = updated.episodes.map((episode, idx) => {
+        const baseEp = base.episodes[idx];
+        const baseData = baseEp?.episodeData;
+        const updatedData = episode.episodeData;
+
+        const mergedEpisodeData = {
+            ...(baseData || updatedData || {}),
+            ...updatedData,
+            thumbnail:
+                safeImage(updatedData?.thumbnail) ??
+                baseData?.thumbnail ??
+                defaultThumb ??
+                '',
+            highlightedFrame:
+                safeImage(updatedData?.highlightedFrame) ??
+                baseData?.highlightedFrame ??
+                defaultHighlight ??
+                '',
+        };
+
+        return {
+            ...episode,
+            episodeData: mergedEpisodeData,
+        };
+    });
+
+    return {
+        ...base,
+        ...updated,
+        beforeImage: safeImage(updated.beforeImage) ?? base.beforeImage,
+        afterImage: safeImage(updated.afterImage) ?? base.afterImage,
+        episodes: mergedEpisodes,
+        geminiVideo: base.geminiVideo ?? updated.geminiVideo ?? null,
+        demoMode: base.demoMode ?? updated.demoMode,
+        candidateFrames: base.candidateFrames ?? updated.candidateFrames ?? [],
+        candidateFrameTimes: base.candidateFrameTimes ?? updated.candidateFrameTimes ?? [],
+    };
+};
 
 interface ReportsScreenProps {
     reportData: ReportData | null;
+    onUpdateReport?: (report: ReportData | null) => void;
 }
 
-export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData }) => {
+export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpdateReport }) => {
+    const [view, setView] = useState<'preview' | 'chat'>('preview');
+    const [chatTurns, setChatTurns] = useState<ReportEditTurn[]>([]);
+    const [input, setInput] = useState('');
+    const [draftReport, setDraftReport] = useState<ReportData | null>(reportData);
+    const [isSending, setIsSending] = useState(false);
+    const [error, setError] = useState('');
+    const [isFinishing, setIsFinishing] = useState(false);
+
+    // Check if session is cleared from the report data (persists across navigation)
+    const sessionCleared = reportData?.sessionCleared ?? false;
+
+    // Track if component is mounted to prevent auto-finalize on initial load
+    const isMountedRef = useRef(false);
+    const skipFirstCleanupRef = useRef(import.meta.env.DEV); // React StrictMode double-invokes effects in dev
+    const latestDraftRef = useRef<ReportData | null>(draftReport);
+    const latestSessionClearedRef = useRef(sessionCleared);
+    const latestVideoRef = useRef(reportData?.geminiVideo ?? null);
+
+    useEffect(() => {
+        setDraftReport(reportData);
+        setChatTurns(
+            reportData
+                ? [
+                    {
+                        role: 'assistant',
+                        content:
+                            'Tell me what to adjust. I will only add items that are clearly visible in the video and will refuse anything else.',
+                    },
+                ]
+                : []
+        );
+        setInput('');
+        setError('');
+        setView('preview');
+        
+        // Mark as mounted after first render
+        isMountedRef.current = true;
+    }, [reportData]);
+
+    // Keep refs in sync so the unmount cleanup uses the latest data
+    useEffect(() => {
+        latestDraftRef.current = draftReport;
+    }, [draftReport]);
+
+    useEffect(() => {
+        latestSessionClearedRef.current = sessionCleared;
+    }, [sessionCleared]);
+
+    useEffect(() => {
+        latestVideoRef.current = draftReport?.geminiVideo ?? reportData?.geminiVideo ?? null;
+    }, [draftReport, reportData]);
+
+    // Separate effect for cleanup - only runs on unmount
+    useEffect(() => {
+        return () => {
+            // In dev, React StrictMode runs effect cleanup once on mount; skip that first pass.
+            if (skipFirstCleanupRef.current) {
+                skipFirstCleanupRef.current = false;
+                return;
+            }
+
+            const currentDraft = latestDraftRef.current;
+            const alreadyCleared = latestSessionClearedRef.current;
+            const videoToDelete = latestVideoRef.current;
+
+            // Only auto-save if component was actually used (not just mounted and unmounted immediately)
+            // and session is not already cleared
+            if (isMountedRef.current && currentDraft && !alreadyCleared && onUpdateReport) {
+                const finalReport = {
+                    ...currentDraft,
+                    geminiVideo: null,
+                    sessionCleared: true,
+                };
+                onUpdateReport(finalReport);
+
+                // Clean up video in background (fire and forget)
+                if (videoToDelete) {
+                    deleteGeminiFile(videoToDelete).catch(() => {
+                        // Silently fail - video will expire naturally
+                    });
+                }
+            }
+        };
+    }, [onUpdateReport]); // Empty-ish deps - only runs on mount/unmount
+
     // If no report data, show empty state
     if (!reportData) {
         return (
@@ -22,7 +192,155 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData }) => {
         );
     }
 
-    const displayData = reportData;
+    const displayData = draftReport ?? reportData;
+    const hasVideo = !!reportData.geminiVideo;
+    const canSend = input.trim().length > 0 && !isSending && !sessionCleared;
+
+    const attachFramesToNewEpisodes = async (base: ReportData, updated: ReportData): Promise<ReportData> => {
+        if (!updated.episodes || !updated.episodes.length) return updated;
+        if (!base.candidateFrames?.length) return updated;
+
+        const candidateFrames = base.candidateFrames;
+        const candidateFrameTimes = base.candidateFrameTimes ?? [];
+
+        const episodes = await Promise.all(
+            updated.episodes.map(async (episode, idx) => {
+                const hasThumb = episode.episodeData?.thumbnail && episode.episodeData.thumbnail !== '[omitted]';
+                if (hasThumb) return episode;
+
+                const summary = episode.summary || '';
+                const startTime = typeof episode.episodeData?.startTime === 'number' ? episode.episodeData.startTime : null;
+                const endTime = typeof episode.episodeData?.endTime === 'number' ? episode.episodeData.endTime : null;
+
+                const selection = await pickFramesForEpisode({
+                    episodeSummary: summary,
+                    startTime,
+                    endTime,
+                    candidateFrames,
+                    candidateFrameTimes,
+                    maxFrames: 1,
+                });
+
+                if (selection.status === 'selected' && selection.frameIndices.length) {
+                    const chosen = candidateFrames[selection.frameIndices[0]];
+                    return {
+                        ...episode,
+                        episodeData: {
+                            ...episode.episodeData,
+                            thumbnail: chosen,
+                            highlightedFrame: chosen,
+                        },
+                    };
+                }
+
+                // fallback to nearest frame by time if selection failed
+                const targetTime =
+                    startTime !== null && endTime !== null
+                        ? (startTime + endTime) / 2
+                        : candidateFrameTimes.length
+                            ? candidateFrameTimes[Math.floor(candidateFrameTimes.length / 2)]
+                            : 0;
+
+                let bestIndex = 0;
+                let bestDelta = Number.POSITIVE_INFINITY;
+                for (let i = 0; i < candidateFrames.length; i++) {
+                    const t = candidateFrameTimes[i] ?? targetTime;
+                    const delta = Math.abs(t - targetTime);
+                    if (delta < bestDelta) {
+                        bestDelta = delta;
+                        bestIndex = i;
+                    }
+                }
+
+                const fallbackFrame = candidateFrames[bestIndex];
+                return {
+                    ...episode,
+                    episodeData: {
+                        ...episode.episodeData,
+                        thumbnail: fallbackFrame,
+                        highlightedFrame: fallbackFrame,
+                    },
+                };
+            })
+        );
+
+        return { ...updated, episodes };
+    };
+
+    const handleSendMessage = async () => {
+        const trimmed = input.trim();
+        if (!trimmed || !displayData) return;
+
+        setIsSending(true);
+        setError('');
+        setInput('');
+
+        const userTurn: ReportEditTurn = { role: 'user', content: trimmed };
+        const nextTurns = [...chatTurns, userTurn];
+        setChatTurns(nextTurns);
+
+        try {
+            const result = await editReportWithGemini({
+                report: displayData,
+                message: trimmed,
+                turns: nextTurns,
+                video: reportData.geminiVideo ?? null,
+            });
+
+            const assistantTurn: ReportEditTurn = {
+                role: 'assistant',
+                content: result.reply || 'Update ready.',
+            };
+
+            setChatTurns((prev) => [...prev, assistantTurn]);
+
+            if (result.updatedReport) {
+                const withFrames = await attachFramesToNewEpisodes(displayData, result.updatedReport);
+                const merged = mergeReportMedia(displayData, withFrames);
+                setDraftReport(merged);
+            }
+
+            if (result.error) {
+                setError(result.error);
+            } else {
+                setError('');
+            }
+        } catch (err) {
+            setError('Edit failed. Please try again.');
+        } finally {
+            setIsSending(false);
+        }
+    };
+
+    const handleFinishAndClear = async () => {
+        if (sessionCleared || isFinishing) return;
+        setIsFinishing(true);
+        try {
+            // Save the edited report before clearing
+            if (onUpdateReport && draftReport) {
+                // Clear the video reference and mark session as cleared
+                const finalReport = { 
+                    ...draftReport, 
+                    geminiVideo: null,
+                    sessionCleared: true // Lock the report permanently
+                };
+                onUpdateReport(finalReport);
+            }
+            
+            await deleteGeminiFile(reportData.geminiVideo ?? null);
+            setChatTurns((prev) => [
+                ...prev,
+                {
+                    role: 'assistant',
+                    content: 'Session finished. Report saved and upload cleared.',
+                },
+            ]);
+        } catch (err) {
+            setError('Could not clear the session. Try again.');
+        } finally {
+            setIsFinishing(false);
+        }
+    };
 
     const handleDownloadPdf = () => {
         const doc = new jsPDF();
@@ -275,92 +593,196 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData }) => {
     };
 
     return (
-        <div className="absolute inset-0 flex flex-col px-4 pb-32 pt-2 overflow-y-auto">
-            {/* Report Card */}
-            <div className="bg-white rounded-3xl shadow-xl mb-4">
-                {/* Header */}
-                <div className="bg-brand-teal-dark p-4 text-center rounded-t-3xl">
-                    <h2 className="text-white font-bold text-lg">{displayData.projectTitle || "Worksite Report"}</h2>
-                    <p className="text-brand-teal-light text-xs font-medium">{displayData.date || new Date().toLocaleDateString()}</p>
-                </div>
+        <div className="absolute inset-0 flex flex-col px-4 pb-28 pt-2 overflow-hidden">
+            <div className="grid grid-cols-2 gap-2 mb-3">
+                <button
+                    onClick={() => setView('preview')}
+                    className={`py-3 rounded-2xl font-semibold text-sm transition-colors ${view === 'preview' ? 'bg-brand-teal-dark text-white shadow-lg' : 'bg-slate-800 text-slate-300'}`}
+                >
+                    Preview
+                </button>
+                <button
+                    onClick={() => setView('chat')}
+                    className={`py-3 rounded-2xl font-semibold text-sm transition-colors ${view === 'chat' ? 'bg-brand-teal-dark text-white shadow-lg' : 'bg-slate-800 text-slate-300'}`}
+                >
+                    Chat Edit
+                </button>
+            </div>
 
-                {/* Content */}
-                <div className="p-6 text-brand-dark">
-                    <p className="text-sm leading-relaxed text-center mb-6 font-medium text-gray-600">
-                        {displayData.summary}
-                    </p>
+            <div className="flex-1 overflow-y-auto space-y-3">
+                {view === 'preview' ? (
+                    <>
+                        <div className="bg-white rounded-3xl shadow-xl">
+                            <div className="bg-brand-teal-dark p-4 text-center rounded-t-3xl">
+                                <h2 className="text-white font-bold text-lg">{displayData.projectTitle || "Worksite Report"}</h2>
+                                <p className="text-brand-teal-light text-xs font-medium">{displayData.date || new Date().toLocaleDateString()}</p>
+                                <p className="text-[11px] text-teal-100 mt-1">
+                                    {hasVideo ? 'Grounded to uploaded video' : 'Frame-based analysis'}
+                                </p>
+                            </div>
 
-                    {/* Before / After Photos */}
-                    {(displayData.beforeImage || displayData.afterImage) && (
-                        <div className="grid grid-cols-2 gap-3 mb-6">
-                            {displayData.beforeImage && (
-                                <div className="flex flex-col gap-1">
-                                    <span className="text-xs font-bold uppercase text-slate-500">Before</span>
-                                    <img src={displayData.beforeImage} alt="Before" className="w-full h-32 object-cover rounded-xl border border-slate-200" />
-                                </div>
-                            )}
-                            {displayData.afterImage && (
-                                <div className="flex flex-col gap-1">
-                                    <span className="text-xs font-bold uppercase text-slate-500">After</span>
-                                    <img src={displayData.afterImage} alt="After" className="w-full h-32 object-cover rounded-xl border border-slate-200" />
-                                </div>
-                            )}
-                        </div>
-                    )}
+                            <div className="p-6 text-brand-dark">
+                                <p className="text-sm leading-relaxed text-center mb-6 font-medium text-gray-600">
+                                    {displayData.summary}
+                                </p>
 
-                    {/* Render Episodes */}
-                    {displayData.episodes && displayData.episodes.length > 0 ? (
-                        <div className="space-y-6">
-                            <h3 className="font-bold text-slate-700 text-center">Episode Highlights</h3>
-                            {displayData.episodes.map((episode: any, index: number) => (
-                                <div key={index} className="bg-slate-50 rounded-xl overflow-hidden border border-slate-100 shadow-sm">
-                                    {episode.episodeData?.thumbnail && (
-                                        <img
-                                            src={episode.episodeData.thumbnail}
-                                            alt={`Episode ${index + 1}`}
-                                            className="w-full h-40 object-cover"
-                                        />
-                                    )}
-                                    <div className="p-4 space-y-2">
-                                        <div className="flex items-center justify-between text-xs text-slate-500 uppercase tracking-wide">
-                                            <span>Episode {index + 1}</span>
-                                            {episode.episodeData?.startTime !== undefined && (
-                                                <span>{episode.episodeData.startTime}s – {episode.episodeData.endTime}s</span>
-                                            )}
-                                        </div>
-                                        <p className="text-sm text-slate-700">{episode.summary}</p>
-                                        
-                                        {/* Tools & Actions Tags */}
-                                        {(episode.episodeData?.detectedTools?.length > 0 || episode.episodeData?.keyActions?.length > 0) && (
-                                            <div className="flex flex-wrap gap-2 text-xs mt-2">
-                                                {episode.episodeData.detectedTools?.map((tool: string) => (
-                                                    <span key={tool} className="px-2 py-1 rounded-full bg-indigo-100 text-indigo-700">
-                                                        {tool}
-                                                    </span>
-                                                ))}
-                                                {episode.episodeData.keyActions?.map((action: string) => (
-                                                    <span key={action} className="px-2 py-1 rounded-full bg-orange-100 text-orange-700">
-                                                        {action}
-                                                    </span>
-                                                ))}
+                                {(displayData.beforeImage || displayData.afterImage) && (
+                                    <div className="grid grid-cols-2 gap-3 mb-6">
+                                        {displayData.beforeImage && (
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-xs font-bold uppercase text-slate-500">Before</span>
+                                                <img src={displayData.beforeImage} alt="Before" className="w-full h-32 object-cover rounded-xl border border-slate-200" />
+                                            </div>
+                                        )}
+                                        {displayData.afterImage && (
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-xs font-bold uppercase text-slate-500">After</span>
+                                                <img src={displayData.afterImage} alt="After" className="w-full h-32 object-cover rounded-xl border border-slate-200" />
                                             </div>
                                         )}
                                     </div>
+                                )}
+
+                                {displayData.episodes && displayData.episodes.length > 0 ? (
+                                    <div className="space-y-6">
+                                        <h3 className="font-bold text-slate-700 text-center">Episode Highlights</h3>
+                                        {displayData.episodes.map((episode: any, index: number) => (
+                                            <div key={index} className="bg-slate-50 rounded-xl overflow-hidden border border-slate-100 shadow-sm">
+                                                {episode.episodeData?.thumbnail && (
+                                                    <img
+                                                        src={episode.episodeData.thumbnail}
+                                                        alt={`Episode ${index + 1}`}
+                                                        className="w-full h-40 object-cover"
+                                                    />
+                                                )}
+                                                <div className="p-4 space-y-2">
+                                                    <div className="flex items-center justify-between text-xs text-slate-500 uppercase tracking-wide">
+                                                        <span>Episode {index + 1}</span>
+                                                        {episode.episodeData?.startTime !== undefined && (
+                                                            <span>{episode.episodeData.startTime}s – {episode.episodeData.endTime}s</span>
+                                                        )}
+                                                    </div>
+                                                    <p className="text-sm text-slate-700">{episode.summary}</p>
+                                                    
+                                                    {(episode.episodeData?.detectedTools?.length > 0 || episode.episodeData?.keyActions?.length > 0) && (
+                                                        <div className="flex flex-wrap gap-2 text-xs mt-2">
+                                                            {episode.episodeData.detectedTools?.map((tool: string) => (
+                                                                <span key={tool} className="px-2 py-1 rounded-full bg-indigo-100 text-indigo-700">
+                                                                    {tool}
+                                                                </span>
+                                                            ))}
+                                                            {episode.episodeData.keyActions?.map((action: string) => (
+                                                                <span key={action} className="px-2 py-1 rounded-full bg-orange-100 text-orange-700">
+                                                                    {action}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="text-center text-slate-500 text-sm italic">No episodes recorded.</p>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <ActionButton label="Edit Report" />
+                            <ActionButton label="View Full Report" variant="primary" onClick={handleDownloadPdf} />
+                            <ActionButton label="Resume Report" />
+                            <ActionButton label="Export Report" onClick={handleDownloadPdf} />
+                        </div>
+                    </>
+                ) : (
+                    <div className="bg-slate-900/70 rounded-3xl border border-slate-800 flex flex-col h-full">
+                        <div className="p-4 flex items-start justify-between gap-3">
+                            <div>
+                                <p className="text-white font-semibold flex items-center gap-2">
+                                    <MessageCircle size={18} /> Edit with Gemini
+                                </p>
+                                <p className="text-xs text-slate-400">
+                                    {hasVideo
+                                        ? 'Grounded to uploaded video. Add time hints for faster checks.'
+                                        : 'No video upload available; additions must be clearly visible in provided frames.'}
+                                </p>
+                                {isSending && (
+                                    <p className="text-[11px] text-teal-200 mt-1 flex items-center gap-1">
+                                        <Loader2 className="animate-spin" size={12} /> Sending…
+                                    </p>
+                                )}
+                            </div>
+                            <button
+                                onClick={handleFinishAndClear}
+                                disabled={isFinishing || sessionCleared || !hasVideo}
+                                className={`flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${
+                                    sessionCleared
+                                        ? 'bg-emerald-700 text-white'
+                                        : hasVideo
+                                            ? 'bg-slate-800 text-white hover:bg-slate-700'
+                                            : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                                }`}
+                            >
+                                {isFinishing ? <Loader2 className="animate-spin" size={14} /> : <Trash2 size={14} />}
+                                {sessionCleared ? 'Cleared' : 'Finish & Clear'}
+                            </button>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto px-4 space-y-3">
+                            {chatTurns.map((turn, idx) => (
+                                <div
+                                    key={idx}
+                                    className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
+                                        turn.role === 'user'
+                                            ? 'ml-auto bg-brand-teal-dark text-white'
+                                            : 'bg-slate-800 text-slate-100'
+                                    }`}
+                                >
+                                    {turn.content}
                                 </div>
                             ))}
+                            {!chatTurns.length && (
+                                <div className="text-slate-500 text-sm">No messages yet.</div>
+                            )}
                         </div>
-                    ) : (
-                        <p className="text-center text-slate-500 text-sm italic">No episodes recorded.</p>
-                    )}
-                </div>
-            </div>
 
-            {/* Action Buttons Grid */}
-            <div className="grid grid-cols-2 gap-3 mb-4">
-                <ActionButton label="Edit Report" />
-                <ActionButton label="View Full Report" variant="primary" onClick={handleDownloadPdf} />
-                <ActionButton label="Resume Report" />
-                <ActionButton label="Export Report" onClick={handleDownloadPdf} />
+                        {error && (
+                            <div className="px-4 pt-2 text-xs text-amber-300">
+                                {error}
+                            </div>
+                        )}
+
+                        <div className="p-3 border-t border-slate-800">
+                            <div className="flex items-center gap-2">
+                                <input
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && canSend) {
+                                            e.preventDefault();
+                                            handleSendMessage();
+                                        }
+                                    }}
+                                    placeholder="Ask to add or edit something (cite a timecode)"
+                                    className="flex-1 bg-slate-800 text-white rounded-2xl px-3 py-3 text-sm outline-none border border-slate-700 focus:border-brand-teal-light"
+                                />
+                                <button
+                                    onClick={handleSendMessage}
+                                    disabled={!canSend}
+                                    className={`p-3 rounded-2xl text-white font-semibold flex items-center gap-1 transition-colors ${
+                                        canSend ? 'bg-brand-teal-dark hover:bg-brand-teal' : 'bg-slate-700 cursor-not-allowed'
+                                    }`}
+                                >
+                                    {isSending ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />}
+                                </button>
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-2 flex items-center gap-1">
+                                <ShieldCheck size={12} /> Only changes visible in the video will be applied. Include time offsets when you can.
+                            </p>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );

@@ -1,7 +1,34 @@
 import { GoogleGenAI } from '@google/genai';
-import { Episode, EpisodeInsightRequest, GeminiEpisodeInsight, GeminiReportOverview, BoundingBox } from '../types';
+import {
+    Episode,
+    EpisodeInsightRequest,
+    GeminiEpisodeInsight,
+    GeminiReportOverview,
+    BoundingBox,
+    GeminiVideoReference,
+    ReportData,
+    ReportEditTurn,
+    ReportEditResponse,
+} from '../types';
+
+export interface FrameSelectionRequest {
+    episodeSummary: string;
+    startTime: number | null;
+    endTime: number | null;
+    candidateFrames: string[];
+    candidateFrameTimes: number[];
+    maxFrames?: number;
+}
+
+export interface FrameSelectionResult {
+    status: 'selected' | 'not_visible' | 'not_in_candidates';
+    frameIndices: number[];
+    reason: string;
+}
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
+// Use 2.5-flash for edits - now optimized with no image data sent
+const GEMINI_MODEL_EDIT = 'gemini-2.5-flash';
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
@@ -10,6 +37,8 @@ if (!apiKey) {
 }
 
 const geminiClient = new GoogleGenAI({ apiKey }) as any;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const callGemini = async (payload: Record<string, unknown>) => {
     if (geminiClient.responses && typeof geminiClient.responses.generate === 'function') {
@@ -131,17 +160,17 @@ const coerceEpisodeInsight = (raw: any): GeminiEpisodeInsight => {
 
     const focusRegions = sanitizeBoxes(
         raw.focusRegions ??
-            raw.focus_regions ??
-            raw.focusRegionsNormalized ??
-            raw.focus ?? []
+        raw.focus_regions ??
+        raw.focusRegionsNormalized ??
+        raw.focus ?? []
     );
 
     const redactionRegions = sanitizeBoxes(
         raw.redactionRegions ??
-            raw.redaction_regions ??
-            raw.peopleRegions ??
-            raw.faces ??
-            []
+        raw.redaction_regions ??
+        raw.peopleRegions ??
+        raw.faces ??
+        []
     );
 
     const isBeforeCandidate =
@@ -181,19 +210,137 @@ const dataUrlToBase64 = (dataUrl: string): { mimeType: string; data: string } =>
     };
 };
 
+const isFileApiAvailable = () =>
+    geminiClient.files &&
+    typeof geminiClient.files.upload === 'function' &&
+    typeof geminiClient.files.get === 'function';
+const isFileDeleteAvailable = () =>
+    geminiClient.files && typeof geminiClient.files.delete === 'function';
+const isCacheApiAvailable = () =>
+    geminiClient.cachedContents && typeof geminiClient.cachedContents.create === 'function';
+
+const createGeminiCache = async (
+    videoFile: any,
+    mimeType: string,
+    displayName: string
+): Promise<string | null> => {
+    if (!isCacheApiAvailable()) {
+        console.warn('Cache API not available');
+        return null;
+    }
+
+    try {
+        console.log('Creating Gemini cache for video:', displayName);
+        const cache = await geminiClient.cachedContents.create({
+            model: GEMINI_MODEL_EDIT,
+            displayName: `cache-${displayName.replace(/[^a-zA-Z0-9]/g, '-')}-${Date.now()}`,
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        {
+                            fileData: {
+                                mimeType,
+                                fileUri: videoFile.uri,
+                            },
+                        },
+                    ],
+                },
+            ],
+            ttlSeconds: 60 * 10, // 10 minutes cache
+        });
+        console.log('✅ Gemini cache created successfully:', cache.name);
+        return cache.name;
+    } catch (error) {
+        console.error('❌ Failed to create Gemini cache:', error);
+        return null;
+    }
+};
+
+const toVideoReference = (file: any, fallbackMime: string): GeminiVideoReference | null => {
+    if (!file) return null;
+    const fileUri = file.uri ?? file.fileUri ?? null;
+    if (!fileUri) return null;
+    return {
+        fileUri,
+        mimeType: file.mimeType ?? fallbackMime,
+        name: file.name ?? undefined,
+    };
+};
+
+export const uploadVideoForGemini = async (videoFile: File): Promise<GeminiVideoReference | null> => {
+    if (!isFileApiAvailable()) {
+        console.warn('Gemini client does not expose file upload APIs; skipping demo mode upload.');
+        return null;
+    }
+
+    const mimeType = videoFile.type || 'video/mp4';
+
+    try {
+        const uploaded = await geminiClient.files.upload({
+            file: videoFile,
+            config: {
+                mimeType,
+                displayName: videoFile.name,
+            },
+        });
+
+        let reference = toVideoReference(uploaded, mimeType);
+        const fileName = uploaded?.name ?? uploaded?.uri ?? null;
+
+        if (uploaded?.state === 'PROCESSING' && fileName) {
+            const timeoutAt = Date.now() + 30000;
+            let latest = uploaded;
+            while (Date.now() < timeoutAt) {
+                if (latest?.state === 'ACTIVE') break;
+                if (latest?.state === 'FAILED') {
+                    console.warn('Gemini video upload failed to process.', latest?.error ?? '');
+                    return null;
+                }
+                await sleep(1000);
+                latest = await geminiClient.files.get({ name: fileName });
+            }
+            reference = toVideoReference(latest, mimeType) ?? reference;
+        }
+
+        // Try to create a cache for this video to optimize chat calls
+        const cacheName = await createGeminiCache(uploaded, mimeType, videoFile.name);
+        if (cacheName) {
+            reference = { ...reference, cacheName };
+        }
+
+        return reference;
+    } catch (error) {
+        console.error('Failed to upload video for Gemini analysis', error);
+        return null;
+    }
+};
+
+export const deleteGeminiFile = async (video: GeminiVideoReference | null | undefined): Promise<void> => {
+    if (!video || !isFileDeleteAvailable()) return;
+    const name = video.name ?? video.fileUri;
+    try {
+        await geminiClient.files.delete({ name });
+    } catch (error) {
+        console.warn('Failed to delete Gemini file', error);
+    }
+};
+
 export const analyzeEpisodeWithGemini = async (
     request: EpisodeInsightRequest
 ): Promise<GeminiEpisodeInsight> => {
-    const { episode, contextFrame } = request;
+    const { episode, contextFrame, demoMode = false, uploadedVideo } = request;
     const { mimeType, data } = dataUrlToBase64(contextFrame);
+
+    const usingVideo = demoMode && uploadedVideo?.fileUri;
 
     const prompt = `
 You are an assistant that documents real-world construction, maintenance, and repair work in private homes.
 Field workers wear a body-mounted camera while working in a customer's house. The goal is to build an accurate, privacy-safe "digital twin" of the work that was actually performed.
-
-You are given a single still frame from the video. This frame represents work taking place between ${episode.startTime}s and ${episode.endTime}s in the clip.
-
-Your job is to describe only the work that is clearly visible and to identify where to focus and where to blur for privacy. You must never guess or add tasks that are not obviously supported by the image.
+${usingVideo
+            ? `You have the full source video. Focus on activity between ${episode.startTime}s and ${episode.endTime}s. Use the still frame only as a quick locator if needed, but ground your answer in the video segment itself.`
+            : `You are given a single still frame from the video representing work taking place between ${episode.startTime}s and ${episode.endTime}s in the clip.`}
+Your job is to describe only the work that is clearly visible and to identify where to focus and where to blur for privacy. You must never guess or add tasks that are not obviously supported by the visuals.
 
 Return a strict JSON object with exactly this shape:
 {
@@ -214,11 +361,15 @@ Rules:
 - Always return valid JSON that matches the schema above, with no extra keys and no trailing comments or text.
 - The tone of "summary" must be clear and professional but easy for a homeowner to understand.
 - Do not hide problems or risky conditions: if you can clearly see damage, hazards, or temporary fixes, include that in the summary or actions.
-- Do not speculate about future work or hidden parts of the system; describe only what is visible in this frame.
+- Do not speculate about future work or hidden parts of the system; describe only what is visible in this frame or time span.
 - "tools" should list only tools that are clearly identifiable; if you cannot confidently name a tool, do not include it.
 - "actions" should only describe work that is clearly happening in this frame (for example, "turning a valve" rather than "fixing plumbing" if that is all you can see).
-- "focus_regions" must only highlight the work itself: tools, worker hands, and the immediate work surface or components being worked on (pipes, wiring, fixtures, etc.).
-- "redaction_regions" must include faces, heads, full bodies, and any sensitive personal items (for example, family photos, documents, computer screens, or visible house numbers).
+- "focus_regions" must only highlight the work itself: tools, worker hands, and the immediate work surface or components being worked on (pipes, wiring, fixtures, etc.). NEVER mark worker hands or tools as redaction regions.
+- "redaction_regions" must ONLY include faces and heads (ONLY the head/face area, NOT the body or hands). Also blur homeowner personal items like family photos or documents visible in the background. 
+- CRITICAL: DO NOT blur the worker's hands, arms, torso, or any tools. DO NOT blur pipes, fixtures, or work surfaces. Only blur faces/heads from the neck up.
+- If you see worker hands holding tools or working on something, those hands must be in "focus_regions", NEVER in "redaction_regions".
+- Example of what TO blur: A person's face visible in the background, a family photo on the wall.
+- Example of what NOT to blur: Worker hands, pipes being worked on, tools, the work surface, worker's body below the neck.
 - Set "isBeforeCandidate" to true only if:
     - The frame clearly shows the problem area, equipment, or setup before the work is fully completed (for example, damaged, dirty, blocked, leaking, or disassembled components), AND
     - The work area or components occupy most of the visible frame, AND
@@ -227,23 +378,40 @@ Rules:
     - The frame clearly shows the result after work has been completed or significantly improved (for example, clean or restored components, sealed connections, reassembled equipment, or a visibly cleared blockage), AND
     - The finished work area occupies most of the frame and is easy for a homeowner to visually understand as "after", AND
     - No person's face or upper body dominates the frame. If the frame looks like a selfie or the person is the main subject, set "isAfterCandidate" to false.
-- If the frame mostly shows a worker's face, body, or other non-work content (for example, talking to camera, walking, or unrelated scenery), set both "isBeforeCandidate" and "isAfterCandidate" to false.
+- If the visuals mostly show a worker's face, body, or other non-work content (for example, talking to camera, walking, or unrelated scenery), set both "isBeforeCandidate" and "isAfterCandidate" to false.
 - If no tools are visible, return "tools": [].
 - If no clear actions are visible, return "actions": [].
 - If no work-focused regions are needed, return "focus_regions": [].
 - If there is nothing that needs to be blurred, return "redaction_regions": [].
+- CRITICAL FINAL CHECK: If the frame shows only the worker doing their job with no homeowner faces visible, "redaction_regions" should be EMPTY []. Do not blur the work itself!
 `.trim();
 
     try {
+        const parts: any[] = [{ text: prompt }];
+
+        if (usingVideo) {
+            parts.push({
+                fileData: {
+                    mimeType: uploadedVideo.mimeType,
+                    fileUri: uploadedVideo.fileUri,
+                },
+            });
+            parts.push({
+                text: `Focus tightly on the period between ${episode.startTime}s and ${episode.endTime}s.`,
+            });
+            if (data) {
+                parts.push({ inlineData: { mimeType, data } });
+            }
+        } else {
+            parts.push({ inlineData: { mimeType, data } });
+        }
+
         const response = await callGemini({
             model: GEMINI_MODEL,
             contents: [
                 {
                     role: 'user',
-                    parts: [
-                        { text: prompt },
-                        { inlineData: { mimeType, data } },
-                    ],
+                    parts,
                 },
             ],
         });
@@ -253,13 +421,7 @@ Rules:
         return coerceEpisodeInsight(parsed);
     } catch (error) {
         console.error('Gemini episode analysis failed', error);
-        return {
-            summary: 'No automated summary available for this segment.',
-            tools: [],
-            actions: [],
-            focusRegions: [],
-            redactionRegions: [],
-        };
+        return coerceEpisodeInsight({});
     }
 };
 
@@ -417,6 +579,219 @@ Keep the tone factual and professional and never invent locations.
             site: 'On-site location',
             summary: 'Automated summary is unavailable.',
             tasks: [],
+        };
+    }
+};
+
+const formatTurns = (turns: ReportEditTurn[], limit = 2): string =>
+    turns
+        .slice(-limit)
+        .map((turn) => `${turn.role === 'user' ? 'User' : 'Assistant'}: ${turn.content}`)
+        .join('\n');
+
+const stripImagesFromReport = (report: ReportData): ReportData => {
+    const episodes = report.episodes.map((ep) => ({
+        ...ep,
+        episodeData: {
+            ...ep.episodeData,
+            thumbnail: '[omitted]',
+            highlightedFrame: '[omitted]',
+        },
+    }));
+
+    return {
+        ...report,
+        beforeImage: report.beforeImage ? '[omitted]' : '',
+        afterImage: report.afterImage ? '[omitted]' : '',
+        episodes,
+        // Remove candidateFrames - this is an array of base64 images that can be 100s of KB
+        candidateFrames: [],
+        candidateFrameTimes: report.candidateFrameTimes ?? [],
+    };
+};
+
+export const pickFramesForEpisode = async (
+    request: FrameSelectionRequest
+): Promise<FrameSelectionResult> => {
+    const { episodeSummary, startTime, endTime, candidateFrames, candidateFrameTimes, maxFrames = 2 } = request;
+
+    if (!candidateFrames.length) {
+        return {
+            status: 'not_in_candidates',
+            frameIndices: [],
+            reason: 'No candidate frames available.',
+        };
+    }
+
+    const labeledFrames = candidateFrames
+        .map((_, idx) => {
+            const t = candidateFrameTimes[idx];
+            return `Frame ${idx} @ ${typeof t === 'number' ? `${t.toFixed(1)}s` : 'unknown time'}`;
+        })
+        .join('\n');
+
+    const prompt = `
+You are selecting representative frames for an episode in a worksite report.
+Episode summary: ${episodeSummary}
+Episode time span: ${startTime ?? '?'}s – ${endTime ?? '?'}s
+
+You are given a list of candidate frames (by index and timestamp). Pick the best ${maxFrames} frames that clearly show the described action. If the action is NOT visible in any provided frame, say so. If the action exists but none of the listed frames capture it, say you need frames closer to the event.
+
+Return strict JSON:
+{
+  "status": "selected" | "not_visible" | "not_in_candidates",
+  "frameIndices": number[],   // only when status = "selected"
+  "reason": string            // short reason
+}
+
+Candidate frames:
+${labeledFrames}
+`.trim();
+
+    try {
+        const response = await callGemini({
+            model: GEMINI_MODEL_EDIT,
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        });
+
+        const text = extractText(response);
+        const parsed = normaliseJson<FrameSelectionResult>(text, {
+            status: 'not_in_candidates',
+            frameIndices: [],
+            reason: 'Failed to parse Gemini response.',
+        });
+
+        if (parsed.status === 'selected') {
+            const indices = Array.isArray(parsed.frameIndices)
+                ? parsed.frameIndices
+                    .map((v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : -1))
+                    .filter((v) => v >= 0 && v < candidateFrames.length)
+                    .slice(0, maxFrames)
+                : [];
+            return {
+                status: indices.length ? 'selected' : 'not_in_candidates',
+                frameIndices: indices,
+                reason: parsed.reason || '',
+            };
+        }
+
+        if (parsed.status === 'not_visible' || parsed.status === 'not_in_candidates') {
+            return {
+                status: parsed.status,
+                frameIndices: [],
+                reason: parsed.reason || '',
+            };
+        }
+
+        return {
+            status: 'not_in_candidates',
+            frameIndices: [],
+            reason: parsed.reason || 'Unknown status.',
+        };
+    } catch (error) {
+        console.error('Gemini frame selection failed', error);
+        return {
+            status: 'not_in_candidates',
+            frameIndices: [],
+            reason: 'Gemini frame selection failed.',
+        };
+    }
+};
+
+export const editReportWithGemini = async (args: {
+    report: ReportData;
+    message: string;
+    turns?: ReportEditTurn[];
+    video?: GeminiVideoReference | null;
+}): Promise<ReportEditResponse> => {
+    const { report, message, turns = [], video } = args;
+
+    // Smart detection: Include video if user is asking to ADD new content
+    const isAddingContent = /\b(add|include|insert|create)\b/i.test(message);
+    const shouldUseVideo = isAddingContent && video;
+
+    const rules = `
+You are editing a worksite report based on the user's request.
+- The report was generated from a bodycam video that has already been fully analyzed.
+- You have the complete report data with all episodes, summaries, and metadata.${shouldUseVideo ? '\n- You have access to the full source video to verify and find new content.' : ''}
+- For edits: Only modify fields the user explicitly requests to change.
+- For additions: ${shouldUseVideo ? 'Review the video to find the described content, extract the timestamp, and add it as a new episode with proper details.' : 'Only add new episodes if the user provides specific timestamps (e.g., "at 2:30" or "between 1:00-1:15").'}
+- When adding new episodes, you MUST include episodeData with: startTime, endTime, detectedTools, keyActions. The thumbnail will be added automatically later.
+- Do NOT invent or guess content. Only add what you can clearly see in the video or what the user explicitly describes with a timestamp.
+- Preserve all existing fields unless explicitly instructed to change them.
+- Do NOT change or blank out any media fields (before/after images, thumbnails, highlighted frames). Keep them exactly as provided.
+- Output strict JSON: { "reply": string, "report": <full updated report object>, "error": string | null }.
+`.trim();
+
+    const history = formatTurns(turns, 2);
+    const condensedReport = stripImagesFromReport(report);
+    const currentReportJson = JSON.stringify(condensedReport);
+
+    const parts: any[] = [
+        {
+            text: [
+                rules,
+                `Current report JSON: ${currentReportJson}`,
+                history ? `Recent chat:\n${history}` : '',
+                `User request: ${message}`,
+            ]
+                .filter(Boolean)
+                .join('\n\n'),
+        },
+    ];
+
+    // Smart video inclusion: only when adding new content
+    if (shouldUseVideo) {
+        console.log('🎥 Including video for content addition request');
+        parts.push({
+            fileData: { mimeType: video.mimeType, fileUri: video.fileUri },
+        });
+    }
+
+    try {
+        console.log(shouldUseVideo ? '📝 Sending request with video' : '📝 Sending text-only request');
+        const response = await callGemini({
+            model: GEMINI_MODEL_EDIT,
+            contents: [
+                {
+                    role: 'user',
+                    parts,
+                },
+            ],
+        });
+
+        const text = extractText(response);
+        const parsed = normaliseJson<{ reply?: string; report?: ReportData | null; error?: string | null }>(text, {
+            reply: '',
+            report: null,
+            error: 'Unable to parse Gemini response.',
+        });
+
+        let updatedReport = parsed.report ?? null;
+
+        // Auto-sort episodes by startTime to maintain chronological order
+        if (updatedReport?.episodes) {
+            const sortedEpisodes = [...updatedReport.episodes].sort((a, b) => {
+                const timeA = a.episodeData?.startTime ?? 0;
+                const timeB = b.episodeData?.startTime ?? 0;
+                return timeA - timeB;
+            });
+            updatedReport = { ...updatedReport, episodes: sortedEpisodes };
+        }
+
+        const reply = parsed.reply || (parsed.error ? String(parsed.error) : text);
+
+        return {
+            reply,
+            updatedReport,
+            error: parsed.error ?? undefined,
+        };
+    } catch (error) {
+        console.error('Gemini report edit failed', error);
+        return {
+            reply: 'Unable to process your edit right now.',
+            updatedReport: null,
+            error: 'Gemini edit call failed.',
         };
     }
 };
