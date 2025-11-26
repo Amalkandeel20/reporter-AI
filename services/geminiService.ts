@@ -335,55 +335,49 @@ export const analyzeEpisodeWithGemini = async (
     const usingVideo = demoMode && uploadedVideo?.fileUri;
 
     const prompt = `
-You are an assistant that documents real-world construction, maintenance, and repair work in private homes.
-Field workers wear a body-mounted camera while working in a customer's house. The goal is to build an accurate, privacy-safe "digital twin" of the work that was actually performed.
+You are an assistant that documents real-world activities, work, and events.
+The video is recorded from a first-person perspective (e.g., body camera, smart glasses) or a handheld camera. The goal is to build an accurate, privacy-safe "digital twin" of the events that actually occurred.
 ${usingVideo
             ? `You have the full source video. Focus on activity between ${episode.startTime}s and ${episode.endTime}s. Use the still frame only as a quick locator if needed, but ground your answer in the video segment itself.`
             : `You are given a single still frame from the video representing work taking place between ${episode.startTime}s and ${episode.endTime}s in the clip.`}
-Your job is to describe only the work that is clearly visible and to identify where to focus and where to blur for privacy. You must never guess or add tasks that are not obviously supported by the visuals.
+Your job is to describe only the activity that is clearly visible and to identify where to focus and where to blur for privacy. You must never guess or add details that are not obviously supported by the visuals.
 
 Return a strict JSON object with exactly this shape:
 {
-  "summary": string,        // 1 short, customer-friendly sentence describing the visible work (what is being done and to what, e.g. "Repairing a leaking copper pipe behind the kitchen wall.")
-  "tools": string[],        // short names of handheld or power tools clearly visible and being used or ready for use (e.g. "cordless drill", "pipe wrench"); empty array if none are clearly visible
-  "actions": string[],      // short verb phrases that describe the actual work activity visible in the frame (e.g. "tightening bolts", "cutting drywall"); use empty array if you are not sure
-  "isBeforeCandidate": boolean, // true if this frame would make a good \"before\" photo that shows the problem or work area before it is fully resolved; otherwise false
-  "isAfterCandidate": boolean,  // true if this frame would make a good \"after\" photo that shows the finished or improved result of the work; otherwise false
-  "focus_regions": [        // regions to keep clearly visible in the customer report (only tools, worker hands, and immediate work area; no faces or full bodies)
+  "summary": string,        // 1 short, clear sentence describing the visible activity (e.g. "Reviewing documents at a desk.", "Repairing a leaking pipe.", "Discussing project plans.")
+  "tools": string[],        // short names of objects, tools, or devices clearly visible and being used (e.g. "laptop", "pen", "drill"); empty array if none are clearly visible
+  "actions": string[],      // short verb phrases that describe the actual activity visible in the frame (e.g. "typing", "writing", "tightening bolts"); use empty array if you are not sure
+  "isBeforeCandidate": boolean, // true if this frame shows the "before" state of a task or event (e.g. broken item, messy desk, start of meeting); otherwise false
+  "isAfterCandidate": boolean,  // true if this frame shows the "after" state (e.g. fixed item, organized desk, end of meeting); otherwise false
+  "focus_regions": [        // regions to keep clearly visible (the main subject of the activity, tools, hands, work area; NO faces)
     { "x": number, "y": number, "width": number, "height": number } // all values normalized to 0–1 relative to image width and height
   ],
-  "redaction_regions": [    // regions that contain faces, people, personal belongings, or anything that could identify the occupants and must be blurred
+  "redaction_regions": [    // regions that contain faces, people, personal belongings, or anything that could identify individuals and must be blurred
     { "x": number, "y": number, "width": number, "height": number }
   ]
 }
 
 Rules:
 - Always return valid JSON that matches the schema above, with no extra keys and no trailing comments or text.
-- The tone of "summary" must be clear and professional but easy for a homeowner to understand.
-- Do not hide problems or risky conditions: if you can clearly see damage, hazards, or temporary fixes, include that in the summary or actions.
-- Do not speculate about future work or hidden parts of the system; describe only what is visible in this frame or time span.
-- "tools" should list only tools that are clearly identifiable; if you cannot confidently name a tool, do not include it.
-- "actions" should only describe work that is clearly happening in this frame (for example, "turning a valve" rather than "fixing plumbing" if that is all you can see).
-- "focus_regions" must only highlight the work itself: tools, worker hands, and the immediate work surface or components being worked on (pipes, wiring, fixtures, etc.). NEVER mark worker hands or tools as redaction regions.
-- "redaction_regions" must ONLY include faces and heads (ONLY the head/face area, NOT the body or hands). Also blur homeowner personal items like family photos or documents visible in the background. 
-- CRITICAL: DO NOT blur the worker's hands, arms, torso, or any tools. DO NOT blur pipes, fixtures, or work surfaces. Only blur faces/heads from the neck up.
-- If you see worker hands holding tools or working on something, those hands must be in "focus_regions", NEVER in "redaction_regions".
-- Example of what TO blur: A person's face visible in the background, a family photo on the wall.
-- Example of what NOT to blur: Worker hands, pipes being worked on, tools, the work surface, worker's body below the neck.
-- Set "isBeforeCandidate" to true only if:
-    - The frame clearly shows the problem area, equipment, or setup before the work is fully completed (for example, damaged, dirty, blocked, leaking, or disassembled components), AND
-    - The work area or components occupy most of the visible frame, AND
-    - No person's face or upper body dominates the frame. If a person is the main subject, set "isBeforeCandidate" to false.
-- Set "isAfterCandidate" to true only if:
-    - The frame clearly shows the result after work has been completed or significantly improved (for example, clean or restored components, sealed connections, reassembled equipment, or a visibly cleared blockage), AND
-    - The finished work area occupies most of the frame and is easy for a homeowner to visually understand as "after", AND
-    - No person's face or upper body dominates the frame. If the frame looks like a selfie or the person is the main subject, set "isAfterCandidate" to false.
-- If the visuals mostly show a worker's face, body, or other non-work content (for example, talking to camera, walking, or unrelated scenery), set both "isBeforeCandidate" and "isAfterCandidate" to false.
-- If no tools are visible, return "tools": [].
+- The tone of "summary" must be professional and factual.
+- Do not speculate about context not visible in the frame.
+- "tools" should list only objects/tools that are clearly identifiable.
+- "actions" should only describe activity that is clearly happening.
+- "focus_regions" must highlight the main activity: hands, tools, objects being worked on, documents being read. NEVER mark faces as focus regions.
+- "redaction_regions" must ONLY include faces and heads (ONLY the head/face area, NOT the body). Also blur sensitive personal items like screens displaying private info, family photos, or documents with PII.
+- CRITICAL: When defining "redaction_regions" for faces, be GENEROUS. Include the entire head, hair, ears, and chin. Add a safety margin to ensure the face is fully covered even if the person moves slightly. It is better to blur a bit too much around the head than to leave part of a face exposed.
+- CRITICAL: DO NOT blur the person's hands, arms, torso, or the objects they are interacting with (unless it's PII). Only blur faces/heads from the neck up.
+- If you see hands holding items or working, those hands must be in "focus_regions", NEVER in "redaction_regions".
+- Example of what TO blur: A person's face, a computer screen with email, a visible badge with a name.
+- Example of what NOT to blur: Hands, keyboard, tools, the desk surface, body below the neck.
+- Set "isBeforeCandidate" to true only if the frame clearly shows the initial state of a task/event.
+- Set "isAfterCandidate" to true only if the frame clearly shows the completed state.
+- If the visuals mostly show a person's face or non-activity content, set both "isBeforeCandidate" and "isAfterCandidate" to false.
+- If no tools/objects are visible, return "tools": [].
 - If no clear actions are visible, return "actions": [].
-- If no work-focused regions are needed, return "focus_regions": [].
+- If no specific focus is needed, return "focus_regions": [].
 - If there is nothing that needs to be blurred, return "redaction_regions": [].
-- CRITICAL FINAL CHECK: If the frame shows only the worker doing their job with no homeowner faces visible, "redaction_regions" should be EMPTY []. Do not blur the work itself!
+- CRITICAL FINAL CHECK: If the frame shows only hands doing work with no faces visible, "redaction_regions" should be EMPTY [].
 `.trim();
 
     try {
@@ -710,7 +704,7 @@ export const editReportWithGemini = async (args: {
     const isAddingContent = /\b(add|include|insert|create)\b/i.test(message);
     const shouldUseVideo = isAddingContent && video;
 
-const rules = `
+    const rules = `
 You are editing a worksite report based on the user's request.
 - The report was generated from a bodycam video that has already been fully analyzed.
 - You have the complete report data with all episodes, summaries, and metadata.${shouldUseVideo ? '\n- You have access to the full source video to verify and find new content.' : ''}

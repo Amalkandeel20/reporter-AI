@@ -101,11 +101,10 @@ const upscaleBlurred = (
     }
     blurCanvas.width = width;
     blurCanvas.height = height;
-    blurCtx.imageSmoothingEnabled = true;
-    blurCtx.imageSmoothingQuality = 'high';
-    blurCtx.drawImage(tempCanvas, 0, 0, blurCanvas.width, blurCanvas.height);
+
+    // Draw the low-res image scaled up with a blur filter
     blurCtx.filter = 'blur(35px)';
-    blurCtx.drawImage(blurCanvas, 0, 0);
+    blurCtx.drawImage(tempCanvas, 0, 0, blurCanvas.width, blurCanvas.height);
     blurCtx.filter = 'none';
 
     return blurCanvas;
@@ -168,9 +167,6 @@ export const applyPrivacyMask = async (
         const resolvedFocus = focusRegions.length
             ? focusRegions
             : fallbackSplit.focus;
-        // Be conservative: only blur regions explicitly marked for redaction.
-        // We no longer add automatic fallback redactions so that most of the
-        // frame remains clear unless Gemini has identified something sensitive.
         const resolvedRedactions = redactionRegions;
 
         const privacyCanvas = document.createElement('canvas');
@@ -181,43 +177,57 @@ export const applyPrivacyMask = async (
         privacyCanvas.width = width;
         privacyCanvas.height = height;
 
-        // Start from the original image so the work area stays clear by default
+        // 1. Draw the sharp original image
         privacyCtx.drawImage(baseCanvas, 0, 0);
 
+        // 2. Prepare the blurred version
         const blurCanvas = upscaleBlurred(image, width, height);
 
+        // 3. Prepare the mask for redactions (soft, rounded)
+        const redactionBoxes = mergeBoxes(resolvedRedactions)
+            .map((box) => toPixelBox(box, width, height))
+            .map((box) => expandBox(box, width, height, 0.15));
+
+        if (redactionBoxes.length > 0) {
+            const maskCanvas = document.createElement('canvas');
+            maskCanvas.width = width;
+            maskCanvas.height = height;
+            const maskCtx = maskCanvas.getContext('2d');
+
+            if (maskCtx) {
+                // Draw opaque shapes on the mask
+                maskCtx.fillStyle = 'black';
+                maskCtx.shadowColor = 'black';
+                maskCtx.shadowBlur = 20; // Soft feathering
+
+                for (const box of redactionBoxes) {
+                    maskCtx.beginPath();
+                    const radius = Math.min(box.width, box.height) * 0.4;
+                    maskCtx.roundRect(box.x, box.y, box.width, box.height, radius);
+                    maskCtx.fill();
+                }
+
+                // Composite the blur onto the mask (keep blur where mask is opaque)
+                maskCtx.globalCompositeOperation = 'source-in';
+                maskCtx.drawImage(blurCanvas, 0, 0);
+
+                // Draw the masked blur onto the main canvas
+                privacyCtx.drawImage(maskCanvas, 0, 0);
+            }
+        }
+
+        // 4. Draw focus regions (sharp borders)
         const focusBoxes = mergeBoxes(resolvedFocus)
             .map((box) => toPixelBox(box, width, height))
             .map((box) => expandBox(box, width, height, 0.1));
 
-        const redactionBoxes = mergeBoxes(resolvedRedactions)
-            .map((box) => toPixelBox(box, width, height))
-            .map((box) => expandBox(box, width, height, 0.05));
-
-        // Re-draw sharp focus regions with a clear border (purely visual; no blur outside)
         for (const box of focusBoxes) {
-            privacyCtx.save();
-            privacyCtx.beginPath();
-            privacyCtx.rect(box.x, box.y, box.width, box.height);
-            privacyCtx.clip();
-            privacyCtx.drawImage(baseCanvas, 0, 0);
-            privacyCtx.restore();
-
             privacyCtx.lineWidth = Math.max(Math.round(width / 280), 2);
-            privacyCtx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-            privacyCtx.strokeRect(box.x, box.y, box.width, box.height);
-        }
-
-        // Strongly blur and darken explicit redaction regions (faces, etc.)
-        for (const box of redactionBoxes) {
-            privacyCtx.save();
+            privacyCtx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
             privacyCtx.beginPath();
-            privacyCtx.rect(box.x, box.y, box.width, box.height);
-            privacyCtx.clip();
-            privacyCtx.drawImage(blurCanvas, 0, 0);
-            privacyCtx.fillStyle = 'rgba(15, 23, 42, 0.6)';
-            privacyCtx.fillRect(box.x, box.y, box.width, box.height);
-            privacyCtx.restore();
+            const radius = Math.min(box.width, box.height) * 0.1;
+            privacyCtx.roundRect(box.x, box.y, box.width, box.height, radius);
+            privacyCtx.stroke();
         }
 
         return privacyCanvas.toDataURL('image/jpeg', 0.92);
