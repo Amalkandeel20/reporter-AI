@@ -70,32 +70,32 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ currentProject, tasks })
             {/* Action Grid */}
             <div className="grid grid-cols-3 gap-3 mt-2">
                 <ActionButton 
-                    icon={<Plus size={28} />} 
+                    icon={<Plus size={36} />} 
                     label="Start New Report" 
                     onClick={() => navigate('/camera')} // Assuming this starts the flow
                 />
                 <ActionButton 
-                    icon={<Play size={28} />} 
+                    icon={<Play size={36} />} 
                     label="Resume Report" 
                     onClick={() => navigate('/reports')} 
                 />
                 <ActionButton 
-                    icon={<FileText size={28} />} 
+                    icon={<FileText size={36} />} 
                     label="Review Report" 
                     onClick={() => navigate('/reports')} 
                 />
                 <ActionButton 
-                    icon={<Upload size={28} />} 
+                    icon={<Upload size={36} />} 
                     label="Import Report" 
                     onClick={() => {}} // TODO: Open Import Modal
                 />
                 <ActionButton 
-                    icon={<List size={28} />} 
+                    icon={<List size={36} />} 
                     label="Task List" 
                     onClick={() => navigate('/tasks')} 
                 />
                 <ActionButton 
-                    icon={<Clock size={28} />} 
+                    icon={<Clock size={36} />} 
                     label="History" 
                     onClick={() => navigate('/history')} 
                 />
@@ -107,9 +107,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ currentProject, tasks })
 const ActionButton: React.FC<{ icon: React.ReactNode; label: string; onClick: () => void }> = ({ icon, label, onClick }) => (
     <button 
         onClick={onClick}
-        className="bg-brand-teal-dark aspect-square rounded-[2rem] flex flex-col items-center justify-center gap-2 text-white hover:bg-brand-teal transition-all duration-200 shadow-lg active:scale-95 p-2"
+        className="bg-brand-teal-dark aspect-square rounded-[2rem] flex flex-col items-center justify-center gap-2 text-white hover:bg-brand-teal transition-all duration-200 shadow-lg active:scale-95 p-3"
     >
         <div className="mb-1">{icon}</div>
-        <span className="text-[10px] font-medium leading-tight text-center max-w-[80%]">{label}</span>
+        <span className="text-[11px] font-semibold leading-tight text-center max-w-[85%]">{label}</span>
     </button>
 );

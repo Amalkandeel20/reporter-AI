@@ -7,11 +7,21 @@ export const generatePdf = async (reportData: ReportData): Promise<Blob> => {
     const pageWidth = doc.internal.pageSize.getWidth();
     let y = margin;
 
-    // Cover Page
+    // Brand colors (matching app theme)
+    const brandTeal: [number, number, number] = [0, 77, 86]; // #004D56
+    const brandTealLight: [number, number, number] = [0, 109, 122]; // #006D7A
+
+    // Cover Page with branded header
+    doc.setFillColor(...brandTeal);
+    doc.rect(0, 0, pageWidth, 40, 'F');
+
+    doc.setTextColor(255, 255, 255);
     doc.setFontSize(24);
     doc.setFont('helvetica', 'bold');
-    doc.text(reportData.projectTitle || 'Worksite Activity Report', pageWidth / 2, y + 10, { align: 'center' });
-    y += 30;
+    doc.text(reportData.projectTitle || 'Worksite Activity Report', pageWidth / 2, y + 15, { align: 'center' });
+
+    doc.setTextColor(0, 0, 0);
+    y += 50;
 
     doc.setFontSize(16);
     doc.setFont('helvetica', 'normal');
@@ -22,16 +32,24 @@ export const generatePdf = async (reportData: ReportData): Promise<Blob> => {
     doc.text(`Date: ${reportData.date}`, margin, y);
     y += 20;
 
-    doc.setFontSize(12);
+    // Summary section with teal accent
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...brandTeal);
     doc.text('Summary:', margin, y);
+    doc.setTextColor(0, 0, 0);
     y += 7;
+
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'normal');
     const summaryLines = doc.splitTextToSize(reportData.summary, pageWidth - margin * 2);
     doc.text(summaryLines, margin, y);
     y += summaryLines.length * 5 + 10;
 
     const addImageWithLabel = (label: string, imageData: string, x: number, yPos: number, width: number, height: number) => {
         doc.setFontSize(10);
-        doc.text(label, x + width/2, yPos - 2, { align: 'center' });
+        doc.setFont('helvetica', 'bold');
+        doc.text(label, x + width / 2, yPos - 2, { align: 'center' });
         doc.addImage(imageData, 'JPEG', x, yPos, width, height);
     };
 
@@ -50,10 +68,17 @@ export const generatePdf = async (reportData: ReportData): Promise<Blob> => {
     // Episodes Page
     doc.addPage();
     y = margin;
+
+    // Header with teal background
+    doc.setFillColor(...brandTeal);
+    doc.rect(0, 0, pageWidth, 30, 'F');
+    doc.setTextColor(255, 255, 255);
     doc.setFontSize(18);
     doc.setFont('helvetica', 'bold');
-    doc.text('Detailed Episode Log', margin, y);
-    y += 15;
+    doc.text('Detailed Episode Log', pageWidth / 2, 18, { align: 'center' });
+
+    doc.setTextColor(0, 0, 0);
+    y = 45;
 
     doc.setFont('helvetica', 'normal');
     for (const item of reportData.episodes) {
@@ -61,16 +86,16 @@ export const generatePdf = async (reportData: ReportData): Promise<Blob> => {
             doc.addPage();
             y = margin;
         }
-        
+
         const thumbnailWidth = 40;
         const thumbnailHeight = 30;
-        
+
         const episodeImage = item.episodeData.highlightedFrame || item.episodeData.thumbnail;
         doc.addImage(episodeImage, 'JPEG', margin, y, thumbnailWidth, thumbnailHeight);
 
         const textX = margin + thumbnailWidth + 5;
         const textWidth = pageWidth - textX - margin;
-        
+
         doc.setFontSize(12);
         doc.setFont('helvetica', 'bold');
         const summaryLines = doc.splitTextToSize(item.summary, textWidth);
@@ -78,8 +103,9 @@ export const generatePdf = async (reportData: ReportData): Promise<Blob> => {
 
         doc.setFontSize(9);
         doc.setFont('helvetica', 'normal');
-        doc.setTextColor(100);
+        doc.setTextColor(...brandTealLight);
         doc.text(`Time: ${item.episodeData.startTime}s - ${item.episodeData.endTime}s`, textX, y + 15);
+        doc.setTextColor(100);
         const toolsText = item.episodeData.detectedTools.length
             ? item.episodeData.detectedTools.join(', ')
             : 'Not detected';
@@ -88,10 +114,11 @@ export const generatePdf = async (reportData: ReportData): Promise<Blob> => {
             ? item.episodeData.keyActions.join(', ')
             : 'Not detected';
         doc.text(`Actions: ${actionsText}`, textX, y + 25);
-        
+
         y += thumbnailHeight + 15;
         doc.setTextColor(0);
     }
-    
+
     return doc.output('blob');
 };
+

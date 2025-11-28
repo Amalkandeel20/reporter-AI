@@ -520,9 +520,9 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
         const margin = 15;
         const contentWidth = pageWidth - (margin * 2);
 
-        // Brand colors
-        const brandTeal: [number, number, number] = [13, 148, 136];
-        const brandTealLight: [number, number, number] = [77, 182, 172];
+        // Brand colors (matching app theme)
+        const brandTeal: [number, number, number] = [0, 77, 86]; // #004D56
+        const brandTealLight: [number, number, number] = [0, 109, 122]; // #006D7A
         const darkGray: [number, number, number] = [51, 65, 85];
         const lightGray: [number, number, number] = [241, 245, 249];
 
@@ -604,7 +604,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
         yPos = addSectionHeader("EXECUTIVE SUMMARY", yPos);
         
         // Summary box with border
-        doc.setDrawColor(220, 220, 220);
+        doc.setDrawColor(...brandTeal);
         doc.setLineWidth(0.3);
         const summaryHeight = Math.min(doc.splitTextToSize(displayData.summary, contentWidth - 12).length * 5 + 10, 40);
         doc.roundedRect(margin, yPos, contentWidth, summaryHeight, 2, 2);
@@ -619,7 +619,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
         if (displayData.beforeImage || displayData.afterImage) {
             if (yPos > pageHeight - 110) { doc.addPage(); yPos = 20; }
             
-            yPos = addSectionHeader("SITE CONDITION", yPos, [239, 68, 68]); // Red accent
+            yPos = addSectionHeader("SITE CONDITION", yPos, brandTeal);
             
             const imgWidth = (contentWidth - 15) / 2;
             const imgHeight = imgWidth * 0.7;
@@ -627,7 +627,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
             if (displayData.beforeImage) {
                 try {
                     // Label with background
-                    doc.setFillColor(239, 68, 68);
+                    doc.setFillColor(220, 38, 38); // Muted red to match app tint
                     doc.rect(margin, yPos, 30, 8, 'F');
                     doc.setTextColor(255, 255, 255);
                     doc.setFontSize(9);
@@ -645,7 +645,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
             if (displayData.afterImage) {
                 try {
                     // Label with background
-                    doc.setFillColor(34, 197, 94);
+                    doc.setFillColor(22, 163, 74); // Muted green to match app tint
                     doc.rect(margin + imgWidth + 15, yPos, 28, 8, 'F');
                     doc.setTextColor(255, 255, 255);
                     doc.setFontSize(9);
@@ -668,7 +668,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
         if (displayData.episodes && displayData.episodes.length > 0) {
             if (yPos > pageHeight - 70) { doc.addPage(); yPos = 20; }
 
-            yPos = addSectionHeader("ACTIVITY LOG", yPos, [99, 102, 241]); // Blue accent
+            yPos = addSectionHeader("ACTIVITY LOG", yPos, brandTeal);
             yPos += 5;
 
             displayData.episodes.forEach((ep: any, index: number) => {
@@ -680,7 +680,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
                 const cardStartY = yPos;
                 
                 // Episode number badge
-                doc.setFillColor(99, 102, 241);
+                doc.setFillColor(...brandTealLight);
                 doc.circle(margin + 8, yPos + 8, 8, 'F');
                 doc.setTextColor(255, 255, 255);
                 doc.setFontSize(10);
@@ -893,7 +893,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ reportData, onUpda
                                 )}
                             </div>
                             <button
-                                onClick={handleFinishAndClear}
+                                onClick={() => handleFinishAndClear(false)}
                                 disabled={isFinishing || sessionCleared || !hasVideo}
                                 className={`flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${
                                     sessionCleared
