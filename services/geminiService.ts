@@ -40,14 +40,26 @@ const geminiClient = new GoogleGenAI({ apiKey }) as any;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const callGemini = async (payload: Record<string, unknown>) => {
-    if (geminiClient.responses && typeof geminiClient.responses.generate === 'function') {
-        return geminiClient.responses.generate(payload as never);
+const callGemini = async (payload: Record<string, unknown>, retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+        try {
+            if (geminiClient.responses && typeof geminiClient.responses.generate === 'function') {
+                return await geminiClient.responses.generate(payload as never);
+            }
+            if (geminiClient.models && typeof geminiClient.models.generateContent === 'function') {
+                return await geminiClient.models.generateContent(payload as never);
+            }
+            throw new Error('Gemini client does not expose a compatible generate method.');
+        } catch (error: any) {
+            const isLastAttempt = i === retries - 1;
+            console.warn(`Gemini call failed (attempt ${i + 1}/${retries}):`, error.message || error);
+
+            if (isLastAttempt) throw error;
+
+            // Exponential backoff: 1s, 2s, 4s
+            await sleep(1000 * Math.pow(2, i));
+        }
     }
-    if (geminiClient.models && typeof geminiClient.models.generateContent === 'function') {
-        return geminiClient.models.generateContent(payload as never);
-    }
-    throw new Error('Gemini client does not expose a compatible generate method.');
 };
 
 const extractText = (result: any): string => {

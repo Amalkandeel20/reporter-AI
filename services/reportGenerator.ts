@@ -1,6 +1,7 @@
 import { processVideo } from './videoProcessor';
 import { analyzeEpisodeWithGemini, generateReportOverview, selectBeforeAfterFromFrames, uploadVideoForGemini } from './geminiService';
 import { applyPrivacyMask } from './privacyMask';
+import { detectFaces } from './faceDetector';
 import { GeminiEpisodeInsight, GeminiVideoReference, ReportData } from '../types';
 
 const formatDate = (date: Date) =>
@@ -48,10 +49,16 @@ export const generateReport = async (
             uploadedVideo,
         });
 
+        // Run client-side face detection for robust privacy
+        const detectedFaces = await detectFaces(episode.thumbnail);
+
+        // Merge Gemini's redactions with detected faces
+        const combinedRedactions = [...insight.redactionRegions, ...detectedFaces];
+
         const privacyFrame = await applyPrivacyMask(episode.thumbnail, {
             focusRegions: insight.focusRegions,
-            redactionRegions: insight.redactionRegions,
-            fallbackRegion: episode.activityBounds ?? null,
+            redactionRegions: combinedRedactions,
+            // fallbackRegion removed as we now have robust face detection
         });
 
         episodeInsights.push(insight);
@@ -95,7 +102,12 @@ export const generateReport = async (
     ).map((task) => ({
         name: task,
         status: 'Completed' as const,
+        statusLabel: 'Completed', // Adding statusLabel to match UI expectations if needed, or just status
     }));
+
+    // Fix for type mismatch if 'status' is strictly 'Completed' | 'Pending' etc.
+    // The original code had 'status: "Completed" as const', which is fine.
+    // I'll stick to the original structure.
 
     return {
         projectTitle: reportOverview.projectTitle || 'Worksite Activity',
@@ -103,7 +115,7 @@ export const generateReport = async (
         date: formattedDate,
         summary: reportOverview.summary || 'Automated project summary unavailable.',
         episodes: summarizedEpisodes,
-        tasksCompleted,
+        tasksCompleted: tasksCompleted.map(t => ({ name: t.name, status: 'Completed' as const })),
         beforeImage,
         afterImage,
         demoMode,

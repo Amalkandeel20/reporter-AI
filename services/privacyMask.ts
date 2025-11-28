@@ -1,9 +1,9 @@
+import * as StackBlur from 'stackblur-canvas';
 import { BoundingBox } from '../types';
 
 export interface PrivacyMaskOptions {
     focusRegions: BoundingBox[];
     redactionRegions: BoundingBox[];
-    fallbackRegion?: BoundingBox | null;
 }
 
 const clamp = (value: number, min: number, max: number) =>
@@ -79,71 +79,9 @@ const mergeBoxes = (boxes: BoundingBox[]): BoundingBox[] => {
     }, []);
 };
 
-const upscaleBlurred = (
-    image: HTMLImageElement,
-    width: number,
-    height: number
-): HTMLCanvasElement => {
-    const downscaleFactor = 4;
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d');
-    if (!tempCtx) {
-        throw new Error('Unable to create temp canvas context');
-    }
-    tempCanvas.width = Math.max(32, Math.round(width / downscaleFactor));
-    tempCanvas.height = Math.max(32, Math.round(height / downscaleFactor));
-    tempCtx.drawImage(image, 0, 0, tempCanvas.width, tempCanvas.height);
-
-    const blurCanvas = document.createElement('canvas');
-    const blurCtx = blurCanvas.getContext('2d');
-    if (!blurCtx) {
-        throw new Error('Unable to create blur canvas context');
-    }
-    blurCanvas.width = width;
-    blurCanvas.height = height;
-
-    // Draw the low-res image scaled up with a blur filter
-    blurCtx.filter = 'blur(35px)';
-    blurCtx.drawImage(tempCanvas, 0, 0, blurCanvas.width, blurCanvas.height);
-    blurCtx.filter = 'none';
-
-    return blurCanvas;
-};
-
-const splitFallbackRegion = (fallbackRegion?: BoundingBox | null) => {
-    if (!fallbackRegion) {
-        return {
-            focus: [],
-            redactions: [],
-        };
-    }
-
-    const focusHeight = clamp(fallbackRegion.height * 0.7, 0.05, 1);
-    const focusY = clamp(fallbackRegion.y + fallbackRegion.height * 0.3, 0, 1 - focusHeight);
-    const faceHeight = clamp(fallbackRegion.height * 0.35, 0.05, 1);
-
-    const focusRegion: BoundingBox = {
-        x: fallbackRegion.x,
-        y: focusY,
-        width: fallbackRegion.width,
-        height: focusHeight,
-    };
-    const faceRegion: BoundingBox = {
-        x: fallbackRegion.x,
-        y: fallbackRegion.y,
-        width: fallbackRegion.width,
-        height: faceHeight,
-    };
-
-    return {
-        focus: [focusRegion],
-        redactions: [faceRegion],
-    };
-};
-
 export const applyPrivacyMask = async (
     imageDataUrl: string,
-    { focusRegions, redactionRegions, fallbackRegion }: PrivacyMaskOptions
+    { focusRegions, redactionRegions }: PrivacyMaskOptions
 ): Promise<string> => {
     if (!imageDataUrl) {
         return imageDataUrl;
@@ -163,12 +101,6 @@ export const applyPrivacyMask = async (
         baseCanvas.height = height;
         baseCtx.drawImage(image, 0, 0, width, height);
 
-        const fallbackSplit = splitFallbackRegion(fallbackRegion ?? null);
-        const resolvedFocus = focusRegions.length
-            ? focusRegions
-            : fallbackSplit.focus;
-        const resolvedRedactions = redactionRegions;
-
         const privacyCanvas = document.createElement('canvas');
         const privacyCtx = privacyCanvas.getContext('2d');
         if (!privacyCtx) {
@@ -180,44 +112,45 @@ export const applyPrivacyMask = async (
         // 1. Draw the sharp original image
         privacyCtx.drawImage(baseCanvas, 0, 0);
 
-        // 2. Prepare the blurred version
-        const blurCanvas = upscaleBlurred(image, width, height);
-
-        // 3. Prepare the mask for redactions (soft, rounded)
-        const redactionBoxes = mergeBoxes(resolvedRedactions)
+        // 2. Blur each redaction box in isolation to avoid halos
+        const redactionBoxes = mergeBoxes(redactionRegions)
             .map((box) => toPixelBox(box, width, height))
-            .map((box) => expandBox(box, width, height, 0.15));
+            .map((box) => expandBox(box, width, height, 0.12));
 
-        if (redactionBoxes.length > 0) {
-            const maskCanvas = document.createElement('canvas');
-            maskCanvas.width = width;
-            maskCanvas.height = height;
-            const maskCtx = maskCanvas.getContext('2d');
+        for (const box of redactionBoxes) {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = box.width;
+            tempCanvas.height = box.height;
+            const tempCtx = tempCanvas.getContext('2d');
 
-            if (maskCtx) {
-                // Draw opaque shapes on the mask
-                maskCtx.fillStyle = 'black';
-                maskCtx.shadowColor = 'black';
-                maskCtx.shadowBlur = 20; // Soft feathering
+            if (!tempCtx) continue;
 
-                for (const box of redactionBoxes) {
-                    maskCtx.beginPath();
-                    const radius = Math.min(box.width, box.height) * 0.4;
-                    maskCtx.roundRect(box.x, box.y, box.width, box.height, radius);
-                    maskCtx.fill();
-                }
+            // Copy the region, blur it, then paint it back clipped to rounded corners
+            tempCtx.drawImage(
+                baseCanvas,
+                box.x,
+                box.y,
+                box.width,
+                box.height,
+                0,
+                0,
+                box.width,
+                box.height
+            );
 
-                // Composite the blur onto the mask (keep blur where mask is opaque)
-                maskCtx.globalCompositeOperation = 'source-in';
-                maskCtx.drawImage(blurCanvas, 0, 0);
+            StackBlur.canvasRGBA(tempCanvas, 0, 0, box.width, box.height, 20);
 
-                // Draw the masked blur onto the main canvas
-                privacyCtx.drawImage(maskCanvas, 0, 0);
-            }
+            privacyCtx.save();
+            const radius = Math.min(box.width, box.height) * 0.25;
+            privacyCtx.beginPath();
+            privacyCtx.roundRect(box.x, box.y, box.width, box.height, radius);
+            privacyCtx.clip();
+            privacyCtx.drawImage(tempCanvas, box.x, box.y);
+            privacyCtx.restore();
         }
 
-        // 4. Draw focus regions (sharp borders)
-        const focusBoxes = mergeBoxes(resolvedFocus)
+        // 3. Draw focus regions (sharp borders)
+        const focusBoxes = mergeBoxes(focusRegions)
             .map((box) => toPixelBox(box, width, height))
             .map((box) => expandBox(box, width, height, 0.1));
 
