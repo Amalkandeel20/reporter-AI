@@ -28,6 +28,7 @@ const AppContent: React.FC = () => {
     
     const navigate = useNavigate();
     const location = useLocation();
+    const cameFromMenu = (location.state as { fromMenu?: boolean } | null)?.fromMenu === true;
 
     // Determine if we are on the home screen to adjust layout/header
     const isHome = location.pathname === '/';
@@ -100,6 +101,11 @@ const AppContent: React.FC = () => {
                     onMenuClick={() => setIsMenuOpen(true)} 
                     showClose={!isHome}
                     onCloseClick={() => {
+                        if (cameFromMenu) {
+                            navigate(-1);
+                            setIsMenuOpen(true);
+                            return;
+                        }
                         if (window.history.length > 1) {
                             navigate(-1);
                         } else {
