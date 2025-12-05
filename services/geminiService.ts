@@ -9,6 +9,7 @@ import {
     ReportData,
     ReportEditTurn,
     ReportEditResponse,
+    GeminiFullScanEpisode,
 } from '../types';
 
 export interface FrameSelectionRequest {
@@ -207,6 +208,46 @@ const coerceEpisodeInsight = (raw: any): GeminiEpisodeInsight => {
         redactionRegions,
         isBeforeCandidate,
         isAfterCandidate,
+    };
+};
+
+const coerceFullScanEpisode = (raw: any): GeminiFullScanEpisode | null => {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const startTime = Number(raw.startTime ?? raw.start ?? raw.begin ?? NaN);
+    const endTime = Number(raw.endTime ?? raw.end ?? raw.stop ?? NaN);
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return null;
+
+    const base = coerceEpisodeInsight(raw);
+
+    const frameTimeRaw = raw.frameTime ?? raw.thumbnailTime ?? raw.thumb ?? null;
+    let frameTime =
+        frameTimeRaw === null || frameTimeRaw === undefined
+            ? null
+            : Number.isFinite(Number(frameTimeRaw))
+                ? Number(frameTimeRaw)
+                : null;
+
+    const normalizedStart = Math.max(0, startTime);
+    const normalizedEnd = Math.max(normalizedStart, endTime);
+
+    if (typeof frameTime === 'number') {
+        if (frameTime < normalizedStart || frameTime > normalizedEnd) {
+            frameTime = null;
+        }
+    }
+
+    return {
+        startTime: normalizedStart,
+        endTime: normalizedEnd,
+        summary: base.summary,
+        tools: base.tools,
+        actions: base.actions,
+        isBeforeCandidate: base.isBeforeCandidate ?? false,
+        isAfterCandidate: base.isAfterCandidate ?? false,
+        frameTime,
+        focusRegions: base.focusRegions,
+        redactionRegions: base.redactionRegions,
     };
 };
 
@@ -803,5 +844,65 @@ You are editing a worksite report based on the user's request.
             updatedReport: null,
             error: 'Gemini edit call failed.',
         };
+    }
+};
+
+export const analyzeFullVideoWithGemini = async (
+    video: GeminiVideoReference
+): Promise<GeminiFullScanEpisode[]> => {
+    const prompt = `
+You have the full source video. Scan the entire timeline and identify key segments of visible work.
+Return strict JSON:
+{
+  "episodes": [
+    {
+      "startTime": number,   // seconds
+      "endTime": number,     // seconds
+      "summary": string,     // 1 sentence, factual
+      "tools": string[],     // clearly visible tools/objects in use
+      "actions": string[],   // clearly visible actions
+      "isBeforeCandidate": boolean, // true only if clearly a "before" state
+      "isAfterCandidate": boolean,  // true only if clearly an "after" state
+      "frameTime": number | null,   // best timestamp for a thumbnail inside this segment, or null
+      "focus_regions": [ { "x": number, "y": number, "width": number, "height": number } ],
+      "redaction_regions": [ { "x": number, "y": number, "width": number, "height": number } ]
+    }
+  ]
+}
+Rules:
+- Keep segments tight around the visible action; do not merge unrelated steps. Do not invent segments for filler or idle moments.
+- Only include tools/actions you can clearly see.
+- Mark faces/screens in redaction_regions; never blur hands/tools.
+- Pick frameTime INSIDE the segment where the key action/tool is clearly visible and faces are minimal; avoid 0s unless the action truly starts immediately.
+- If nothing meaningful is visible, return an empty episodes array.
+- No extra text outside the JSON.
+`.trim();
+
+    try {
+        const response = await callGemini({
+            model: GEMINI_MODEL,
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        { text: prompt },
+                        { fileData: { mimeType: video.mimeType, fileUri: video.fileUri } },
+                    ],
+                },
+            ],
+        });
+
+        const text = extractText(response);
+        const parsed = normaliseJson<{ episodes?: any[] }>(text, { episodes: [] });
+        const episodes = Array.isArray(parsed.episodes) ? parsed.episodes : [];
+        const coerced = episodes
+            .map((ep) => coerceFullScanEpisode(ep))
+            .filter((ep): ep is GeminiFullScanEpisode => !!ep);
+
+        // Sort by start time for consistency
+        return coerced.sort((a, b) => a.startTime - b.startTime);
+    } catch (error) {
+        console.error('Gemini full video analysis failed', error);
+        return [];
     }
 };

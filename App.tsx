@@ -12,7 +12,7 @@ import { SettingsMenu } from './components/SettingsMenu';
 import { MyDataMenu } from './components/MyDataMenu';
 import { SupportMenu } from './components/SupportMenu';
 import { AccessibilityMenu } from './components/AccessibilityMenu';
-import { Task, ReportData } from './types';
+import { Task, ReportData, AnalysisMode } from './types';
 import { initialTasks } from './constants';
 import { generateReport } from './services/reportGenerator';
 
@@ -24,7 +24,7 @@ const AppContent: React.FC = () => {
     const [processingStatus, setProcessingStatus] = useState('');
     const [reportData, setReportData] = useState<ReportData | null>(null);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
-    const [demoModeEnabled, setDemoModeEnabled] = useState(false);
+    const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('standard');
     
     const navigate = useNavigate();
     const location = useLocation();
@@ -53,13 +53,13 @@ const AppContent: React.FC = () => {
         ]);
     }, []);
 
-    const handleGenerateReport = useCallback(async (videoFile: File, useDemoMode: boolean) => {
+    const handleGenerateReport = useCallback(async (videoFile: File, mode: AnalysisMode) => {
         setIsProcessing(true);
         try {
             const newReport = await generateReport(
                 videoFile,
                 (status) => setProcessingStatus(status),
-                { demoMode: useDemoMode }
+                { mode }
             );
             setReportData(newReport);
             
@@ -134,11 +134,11 @@ const AppContent: React.FC = () => {
                             path="/camera"
                             element={
                                 <CameraScreen
-                                    onGenerateReport={(file) => handleGenerateReport(file, demoModeEnabled)}
+                                    onGenerateReport={(file, mode) => handleGenerateReport(file, mode)}
                                     isProcessing={isProcessing}
                                     processingStatus={processingStatus}
-                                    demoMode={demoModeEnabled}
-                                    onToggleDemoMode={() => setDemoModeEnabled((prev) => !prev)}
+                                    mode={analysisMode}
+                                    onModeChange={setAnalysisMode}
                                 />
                             }
                         />

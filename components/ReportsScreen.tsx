@@ -83,6 +83,7 @@ const mergeReportMedia = (base: ReportData, updated: ReportData): ReportData => 
         episodes: mergedEpisodes,
         geminiVideo: base.geminiVideo ?? updated.geminiVideo ?? null,
         demoMode: base.demoMode ?? updated.demoMode,
+        analysisMode: base.analysisMode ?? updated.analysisMode,
         candidateFrames: base.candidateFrames ?? updated.candidateFrames ?? [],
         candidateFrameTimes: base.candidateFrameTimes ?? updated.candidateFrameTimes ?? [],
     };

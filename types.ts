@@ -12,6 +12,8 @@ export interface BoundingBox {
   height: number;
 }
 
+export type AnalysisMode = 'standard' | 'demo' | 'full';
+
 export interface Episode {
   id: number;
   startTime: number;
@@ -39,6 +41,7 @@ export interface ReportData {
   beforeImage: string;
   afterImage: string;
   demoMode?: boolean;
+  analysisMode?: AnalysisMode;
   geminiVideo?: GeminiVideoReference | null;
   candidateFrames?: string[];
   candidateFrameTimes?: number[];
@@ -66,6 +69,19 @@ export interface GeminiEpisodeInsight {
   redactionRegions: BoundingBox[];
   isBeforeCandidate?: boolean;
   isAfterCandidate?: boolean;
+}
+
+export interface GeminiFullScanEpisode {
+  startTime: number;
+  endTime: number;
+  summary: string;
+  tools: string[];
+  actions: string[];
+  isBeforeCandidate: boolean;
+  isAfterCandidate: boolean;
+  frameTime: number | null;
+  focusRegions: BoundingBox[];
+  redactionRegions: BoundingBox[];
 }
 
 export interface GeminiReportOverview {

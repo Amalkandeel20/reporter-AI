@@ -1,8 +1,8 @@
 import { processVideo } from './videoProcessor';
-import { analyzeEpisodeWithGemini, generateReportOverview, selectBeforeAfterFromFrames, uploadVideoForGemini } from './geminiService';
+import { analyzeEpisodeWithGemini, analyzeFullVideoWithGemini, generateReportOverview, selectBeforeAfterFromFrames, uploadVideoForGemini } from './geminiService';
 import { applyPrivacyMask } from './privacyMask';
 import { detectFaces } from './faceDetector';
-import { GeminiEpisodeInsight, GeminiVideoReference, ReportData } from '../types';
+import { AnalysisMode, GeminiEpisodeInsight, GeminiFullScanEpisode, GeminiVideoReference, ReportData } from '../types';
 
 const formatDate = (date: Date) =>
     date.toLocaleDateString('en-US', {
@@ -14,9 +14,11 @@ const formatDate = (date: Date) =>
 export const generateReport = async (
     videoFile: File,
     onStatusUpdate: (status: string) => void,
-    options?: { demoMode?: boolean }
+    options?: { demoMode?: boolean; mode?: AnalysisMode }
 ): Promise<ReportData> => {
-    const demoMode = options?.demoMode ?? false;
+    const mode: AnalysisMode = options?.mode ?? (options?.demoMode ? 'demo' : 'standard');
+    const demoMode = mode === 'demo';
+    const fullAIMode = mode === 'full';
 
     onStatusUpdate('Detecting activity in the video...');
     const analysis = await processVideo(videoFile);
@@ -27,7 +29,7 @@ export const generateReport = async (
 
     let uploadedVideo: GeminiVideoReference | null = null;
 
-    if (demoMode) {
+    if (demoMode || fullAIMode) {
         onStatusUpdate('Uploading video to Gemini for native analysis (demo mode)...');
         uploadedVideo = await uploadVideoForGemini(videoFile);
         if (!uploadedVideo) {
@@ -35,44 +37,129 @@ export const generateReport = async (
         }
     }
 
+    const pickFrameByTime = (targetTime: number | null | undefined, fallbackWindow?: { start: number; end: number }): string => {
+        const frames = analysis.candidateFrames ?? [];
+        const times = analysis.candidateFrameTimes ?? [];
+        if (!frames.length) return '';
+        let desired = targetTime;
+        if (fallbackWindow && (desired === null || desired === undefined || !Number.isFinite(desired))) {
+            desired = (fallbackWindow.start + fallbackWindow.end) / 2;
+        }
+        if (!times.length || typeof desired !== 'number' || !Number.isFinite(desired)) {
+            return frames[Math.max(0, Math.floor(frames.length / 2))];
+        }
+        let bestIndex = 0;
+        let bestDelta = Math.abs(times[0] - desired);
+        for (let i = 1; i < times.length; i++) {
+            const delta = Math.abs(times[i] - desired);
+            if (delta < bestDelta) {
+                bestDelta = delta;
+                bestIndex = i;
+            }
+        }
+        return frames[bestIndex] ?? frames[0];
+    };
+
     onStatusUpdate(`Found ${analysis.episodes.length} activity segment${analysis.episodes.length > 1 ? 's' : ''}. Capturing documentation...`);
 
     const episodeInsights: GeminiEpisodeInsight[] = [];
     const summarizedEpisodes = [];
     const privacySafeFrames: string[] = [];
 
-    for (const episode of analysis.episodes) {
-        const insight = await analyzeEpisodeWithGemini({
-            episode,
-            contextFrame: episode.thumbnail,
-            demoMode,
-            uploadedVideo,
-        });
+    const buildFromFullAI = async (fullEpisodes: GeminiFullScanEpisode[]) => {
+        const roundTime = (value: number) => Number(Math.max(0, value).toFixed(1));
 
-        // Run client-side face detection for robust privacy
-        const detectedFaces = await detectFaces(episode.thumbnail);
+        for (const [index, episode] of fullEpisodes.entries()) {
+            const anchorFrame =
+                pickFrameByTime(
+                    episode.frameTime,
+                    { start: episode.startTime, end: episode.endTime }
+                ) || analysis.beforeFrame;
 
-        // Merge Gemini's redactions with detected faces
-        const combinedRedactions = [...insight.redactionRegions, ...detectedFaces];
+            const detectedFaces = anchorFrame ? await detectFaces(anchorFrame) : [];
+            const combinedRedactions = [...(episode.redactionRegions || []), ...detectedFaces];
 
-        const privacyFrame = await applyPrivacyMask(episode.thumbnail, {
-            focusRegions: insight.focusRegions,
-            redactionRegions: combinedRedactions,
-            // fallbackRegion removed as we now have robust face detection
-        });
+            const privacyFrame = anchorFrame
+                ? await applyPrivacyMask(anchorFrame, {
+                    focusRegions: episode.focusRegions || [],
+                    redactionRegions: combinedRedactions,
+                })
+                : anchorFrame;
 
-        episodeInsights.push(insight);
-        summarizedEpisodes.push({
-            episodeData: {
-                ...episode,
-                detectedTools: [...new Set(insight.tools)],
-                keyActions: [...new Set(insight.actions)],
-                thumbnail: privacyFrame,
-                highlightedFrame: privacyFrame,
-            },
-            summary: insight.summary,
-        });
-        privacySafeFrames.push(privacyFrame);
+            const uniqueTools = [...new Set(episode.tools)];
+            const uniqueActions = [...new Set(episode.actions)];
+
+            episodeInsights.push({
+                summary: episode.summary,
+                tools: uniqueTools,
+                actions: uniqueActions,
+                focusRegions: episode.focusRegions || [],
+                redactionRegions: episode.redactionRegions || [],
+                isBeforeCandidate: episode.isBeforeCandidate,
+                isAfterCandidate: episode.isAfterCandidate,
+            });
+
+            summarizedEpisodes.push({
+                episodeData: {
+                    id: index + 1,
+                    startTime: roundTime(episode.startTime),
+                    endTime: roundTime(episode.endTime),
+                    detectedTools: uniqueTools,
+                    keyActions: uniqueActions,
+                    thumbnail: privacyFrame,
+                    highlightedFrame: privacyFrame,
+                    activityBounds: null,
+                },
+                summary: episode.summary,
+            });
+
+            privacySafeFrames.push(privacyFrame);
+        }
+    };
+
+    const runFrameBasedAnalysis = async () => {
+        for (const episode of analysis.episodes) {
+            const insight = await analyzeEpisodeWithGemini({
+                episode,
+                contextFrame: episode.thumbnail,
+                demoMode,
+                uploadedVideo,
+            });
+
+            const detectedFaces = await detectFaces(episode.thumbnail);
+            const combinedRedactions = [...insight.redactionRegions, ...detectedFaces];
+
+            const privacyFrame = await applyPrivacyMask(episode.thumbnail, {
+                focusRegions: insight.focusRegions,
+                redactionRegions: combinedRedactions,
+            });
+
+            episodeInsights.push(insight);
+            summarizedEpisodes.push({
+                episodeData: {
+                    ...episode,
+                    detectedTools: [...new Set(insight.tools)],
+                    keyActions: [...new Set(insight.actions)],
+                    thumbnail: privacyFrame,
+                    highlightedFrame: privacyFrame,
+                },
+                summary: insight.summary,
+            });
+            privacySafeFrames.push(privacyFrame);
+        }
+    };
+
+    let fullEpisodes: GeminiFullScanEpisode[] = [];
+
+    if (fullAIMode && uploadedVideo) {
+        onStatusUpdate('Scanning entire video with Gemini (Full AI mode)...');
+        fullEpisodes = await analyzeFullVideoWithGemini(uploadedVideo);
+    }
+
+    if (fullEpisodes.length) {
+        await buildFromFullAI(fullEpisodes);
+    } else {
+        await runFrameBasedAnalysis();
     }
 
     onStatusUpdate('Generating overall project summary and task list...');
@@ -118,7 +205,8 @@ export const generateReport = async (
         tasksCompleted: tasksCompleted.map(t => ({ name: t.name, status: 'Completed' as const })),
         beforeImage,
         afterImage,
-        demoMode,
+        demoMode: mode !== 'standard',
+        analysisMode: mode,
         geminiVideo: uploadedVideo ?? null,
         candidateFrames: analysis.candidateFrames ?? [],
         candidateFrameTimes: analysis.candidateFrameTimes ?? [],
