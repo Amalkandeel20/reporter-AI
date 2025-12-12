@@ -76,8 +76,9 @@ export const generateReport = async (
                     { start: episode.startTime, end: episode.endTime }
                 ) || analysis.beforeFrame;
 
+            // Only blur detected faces; leave everything else sharp to avoid over-blurring tools/work area
             const detectedFaces = anchorFrame ? await detectFaces(anchorFrame) : [];
-            const combinedRedactions = [...(episode.redactionRegions || []), ...detectedFaces];
+            const combinedRedactions = detectedFaces;
 
             const privacyFrame = anchorFrame
                 ? await applyPrivacyMask(anchorFrame, {
@@ -126,8 +127,9 @@ export const generateReport = async (
                 uploadedVideo,
             });
 
+            // Only blur detected faces; leave everything else sharp to avoid over-blurring tools/work area
             const detectedFaces = await detectFaces(episode.thumbnail);
-            const combinedRedactions = [...insight.redactionRegions, ...detectedFaces];
+            const combinedRedactions = detectedFaces;
 
             const privacyFrame = await applyPrivacyMask(episode.thumbnail, {
                 focusRegions: insight.focusRegions,
@@ -156,8 +158,12 @@ export const generateReport = async (
         fullEpisodes = await analyzeFullVideoWithGemini(uploadedVideo);
     }
 
-    if (fullEpisodes.length) {
-        await buildFromFullAI(fullEpisodes);
+    const saneFullEpisodes = fullEpisodes.filter(
+        (ep) => Number.isFinite(ep.startTime) && Number.isFinite(ep.endTime) && ep.endTime - ep.startTime >= 1.5
+    );
+
+    if (saneFullEpisodes.length) {
+        await buildFromFullAI(saneFullEpisodes);
     } else {
         await runFrameBasedAnalysis();
     }

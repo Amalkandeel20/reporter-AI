@@ -41,14 +41,35 @@ const geminiClient = new GoogleGenAI({ apiKey }) as any;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const DEFAULT_GENERATION_CONFIG = {
+    temperature: 0,
+    topP: 0.1,
+};
+
 const callGemini = async (payload: Record<string, unknown>, retries = 3) => {
     for (let i = 0; i < retries; i++) {
         try {
+            const { generationConfig: callerConfig, ...restPayload } = payload as any;
+            const mergedPayload = {
+                ...restPayload,
+                generationConfig: { ...DEFAULT_GENERATION_CONFIG, ...(callerConfig || {}) },
+            };
+
+            // Support for standard GoogleGenAI SDK with caching
+            if (typeof geminiClient.getGenerativeModel === 'function') {
+                const { model: modelName, cachedContent, ...rest } = mergedPayload;
+                const model = geminiClient.getGenerativeModel({
+                    model: modelName as string,
+                    cachedContent: cachedContent as string,
+                });
+                return await model.generateContent(rest as any);
+            }
+
             if (geminiClient.responses && typeof geminiClient.responses.generate === 'function') {
-                return await geminiClient.responses.generate(payload as never);
+                return await geminiClient.responses.generate(mergedPayload as never);
             }
             if (geminiClient.models && typeof geminiClient.models.generateContent === 'function') {
-                return await geminiClient.models.generateContent(payload as never);
+                return await geminiClient.models.generateContent(mergedPayload as never);
             }
             throw new Error('Gemini client does not expose a compatible generate method.');
         } catch (error: any) {
@@ -211,6 +232,8 @@ const coerceEpisodeInsight = (raw: any): GeminiEpisodeInsight => {
     };
 };
 
+const MIN_FULL_SCAN_DURATION = 1.5; // seconds
+
 const coerceFullScanEpisode = (raw: any): GeminiFullScanEpisode | null => {
     if (!raw || typeof raw !== 'object') return null;
 
@@ -230,12 +253,25 @@ const coerceFullScanEpisode = (raw: any): GeminiFullScanEpisode | null => {
 
     const normalizedStart = Math.max(0, startTime);
     const normalizedEnd = Math.max(normalizedStart, endTime);
+    const duration = normalizedEnd - normalizedStart;
 
-    if (typeof frameTime === 'number') {
-        if (frameTime < normalizedStart || frameTime > normalizedEnd) {
-            frameTime = null;
-        }
+    // Drop segments that are too short to be meaningful or obviously invalid
+    if (!Number.isFinite(duration) || duration < MIN_FULL_SCAN_DURATION) {
+        return null;
     }
+
+    if (typeof frameTime === 'number' && (frameTime < normalizedStart || frameTime > normalizedEnd)) {
+        frameTime = null;
+    }
+
+    // Default to the midpoint of the segment when frameTime is missing/invalid
+    if (frameTime === null) {
+        frameTime = Number(((normalizedStart + normalizedEnd) / 2).toFixed(1));
+    }
+
+    // Require at least some visible action/tool context; otherwise drop
+    const hasContent = Boolean((base.tools?.length ?? 0) || (base.actions?.length ?? 0));
+    if (!hasContent) return null;
 
     return {
         startTime: normalizedStart,
@@ -391,8 +427,8 @@ export const analyzeEpisodeWithGemini = async (
 You are an assistant that documents real-world activities, work, and events.
 The video is recorded from a first-person perspective (e.g., body camera, smart glasses) or a handheld camera. The goal is to build an accurate, privacy-safe "digital twin" of the events that actually occurred.
 ${usingVideo
-            ? `You have the full source video. Focus on activity between ${episode.startTime}s and ${episode.endTime}s. Use the still frame only as a quick locator if needed, but ground your answer in the video segment itself.`
-            : `You are given a single still frame from the video representing work taking place between ${episode.startTime}s and ${episode.endTime}s in the clip.`}
+            ? `You have the full source video. Focus strictly on activity between ${episode.startTime}s and ${episode.endTime}s. Do not include events outside this window.`
+            : `You are given a single still frame from the video representing work taking place between ${episode.startTime}s and ${episode.endTime}s.`}
 Your job is to describe only the activity that is clearly visible and to identify where to focus and where to blur for privacy. You must never guess or add details that are not obviously supported by the visuals.
 
 Return a strict JSON object with exactly this shape:
@@ -444,9 +480,10 @@ Rules:
                 },
             });
             parts.push({
-                text: `Focus tightly on the period between ${episode.startTime}s and ${episode.endTime}s.`,
+                text: `Analyze the video segment from ${episode.startTime}s to ${episode.endTime}s.`,
             });
             if (data) {
+                // Also provide the thumbnail context to ground the result
                 parts.push({ inlineData: { mimeType, data } });
             }
         } else {
@@ -792,17 +829,25 @@ You are editing a worksite report based on the user's request.
     ];
 
     // Smart video inclusion: only when adding new content
+    let cachedContent: string | undefined;
+
     if (shouldUseVideo) {
-        console.log('🎥 Including video for content addition request');
-        parts.push({
-            fileData: { mimeType: video.mimeType, fileUri: video.fileUri },
-        });
+        if (video.cacheName) {
+            console.log('🎥 Using cached video context:', video.cacheName);
+            cachedContent = video.cacheName;
+        } else {
+            console.log('🎥 Including video for content addition request');
+            parts.push({
+                fileData: { mimeType: video.mimeType, fileUri: video.fileUri },
+            });
+        }
     }
 
     try {
         console.log(shouldUseVideo ? '📝 Sending request with video' : '📝 Sending text-only request');
         const response = await callGemini({
             model: GEMINI_MODEL_EDIT,
+            cachedContent,
             contents: [
                 {
                     role: 'user',
@@ -852,18 +897,26 @@ export const analyzeFullVideoWithGemini = async (
 ): Promise<GeminiFullScanEpisode[]> => {
     const prompt = `
 You have the full source video. Scan the entire timeline and identify key segments of visible work.
+
+CRITICAL TIMELINE RULES:
+1. **Use real seconds**: Timestamps must correspond to the video player time (e.g., startTime: 12.5, endTime: 45.0).
+2. **Reject micro-segments**: DO NOT return episodes shorter than 1.5 seconds. If the action is unclear or too brief, omit the segment.
+3. **Visible action only**: Only return segments where a visible action or tool use is clearly happening. Skip idle/filler or shots with no obvious work.
+4. **Full coverage of the action**: Keep each segment to the tight window where the action is visible (a few seconds, not milliseconds). Avoid giant spans with no action.
+5. **Chronological**: Return episodes in time order.
+
 Return strict JSON:
 {
   "episodes": [
     {
-      "startTime": number,   // seconds
-      "endTime": number,     // seconds
+      "startTime": number,   // seconds (e.g. 10.5)
+      "endTime": number,     // seconds (e.g. 24.0)
       "summary": string,     // 1 sentence, factual
       "tools": string[],     // clearly visible tools/objects in use
       "actions": string[],   // clearly visible actions
       "isBeforeCandidate": boolean, // true only if clearly a "before" state
       "isAfterCandidate": boolean,  // true only if clearly an "after" state
-      "frameTime": number | null,   // best timestamp for a thumbnail inside this segment, or null
+      "frameTime": number | null,   // best timestamp for a thumbnail INSIDE this segment; if unsure, use the midpoint
       "focus_regions": [ { "x": number, "y": number, "width": number, "height": number } ],
       "redaction_regions": [ { "x": number, "y": number, "width": number, "height": number } ]
     }
@@ -871,9 +924,10 @@ Return strict JSON:
 }
 Rules:
 - Keep segments tight around the visible action; do not merge unrelated steps. Do not invent segments for filler or idle moments.
+- Do NOT include a segment if no tool/action is visible; omit it instead.
 - Only include tools/actions you can clearly see.
 - Mark faces/screens in redaction_regions; never blur hands/tools.
-- Pick frameTime INSIDE the segment where the key action/tool is clearly visible and faces are minimal; avoid 0s unless the action truly starts immediately.
+- Pick frameTime INSIDE the segment where the key action/tool is clearly visible and faces are minimal; avoid 0s unless the action truly starts immediately. If frameTime is unclear, use the midpoint of the segment.
 - If nothing meaningful is visible, return an empty episodes array.
 - No extra text outside the JSON.
 `.trim();
